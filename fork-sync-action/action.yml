@@ -1,7 +1,8 @@
 name: 'Fork Sync'
 description: >-
-  Keep a fork up to date with its upstream (parent) repository by opening a
-  pull request that carries the incoming commits.
+  Keep a fork up to date with its upstream (parent) repository, or sync one
+  branch into another within a repository, by opening a pull request that
+  carries the incoming commits.
 author: 'rui'
 
 branding:
@@ -27,6 +28,13 @@ inputs:
       default branch.
     required: false
     default: ''
+  source-branch:
+    description: >-
+      Branch-to-branch mode: sync this branch of the current repository into
+      "target-branch" instead of syncing from an upstream. Cannot be combined
+      with upstream-repo/upstream-branch.
+    required: false
+    default: ''
   target-branch:
     description: >-
       Branch on the fork that receives the changes (the pull request base).
@@ -36,7 +44,8 @@ inputs:
   head-branch:
     description: >-
       Branch on the fork that carries the changes (the pull request head).
-      Default: "sync/upstream-<upstream-branch>".
+      Default: "sync/upstream-<upstream-branch>", or
+      "sync/<source-branch>-into-<target-branch>" in branch-to-branch mode.
     required: false
     default: ''
   merge-strategy:

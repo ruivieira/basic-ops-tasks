@@ -56,3 +56,26 @@ jobs:
           test -n "${{ steps.sync.outputs.head-sha }}"
           test "${{ steps.sync.outputs.pushed }}" = "false"
           test -z "${{ steps.sync.outputs.pull-request-url }}"
+
+  # Branch-to-branch mode: dry-run sync of this PR's head branch into main.
+  smoke-branch-sync:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: sync
+        uses: ./fork-sync-action
+        with:
+          source-branch: ${{ github.head_ref }}
+          target-branch: main
+          dry-run: true
+
+      - name: Assert the action produced sane outputs
+        run: |
+          echo "status       = ${{ steps.sync.outputs.status }}"
+          echo "commit-count = ${{ steps.sync.outputs.commit-count }}"
+          test -n "${{ steps.sync.outputs.status }}"
+          test -n "${{ steps.sync.outputs.head-sha }}"
+          test "${{ steps.sync.outputs.pushed }}" = "false"
+          test -z "${{ steps.sync.outputs.pull-request-url }}"

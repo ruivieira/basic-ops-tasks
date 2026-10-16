@@ -30169,6 +30169,11 @@ async function run() {
     const upstreamRepoInput = core.getInput('upstream-repo').trim();
     const upstreamBranchInput = core.getInput('upstream-branch').trim();
     const targetBranchInput = core.getInput('target-branch').trim();
+    const sourceBranchInput = core.getInput('source-branch').trim();
+    const branchMode = sourceBranchInput !== '';
+    if (branchMode && (upstreamRepoInput || upstreamBranchInput)) {
+        throw new Error("The 'source-branch' input (branch-to-branch sync) cannot be combined with 'upstream-repo' or 'upstream-branch'.");
+    }
     if (upstreamRepoInput && !REPOSITORY_PATTERN.test(upstreamRepoInput)) {
         throw new Error(`upstream-repo must look like "owner/name", got "${upstreamRepoInput}".`);
     }
@@ -30176,18 +30181,20 @@ async function run() {
     // Only hit the API for what the inputs did not pin down.
     let forkDefaultBranch = '';
     let parentRepo = '';
-    if (!upstreamRepoInput || !targetBranchInput) {
+    if (!targetBranchInput || (!branchMode && !upstreamRepoInput)) {
         core.info(`Looking up ${forkOwner}/${forkRepo} …`);
         const { data: fork } = await octokit.rest.repos.get({ owner: forkOwner, repo: forkRepo });
         forkDefaultBranch = fork.default_branch;
         parentRepo = fork.parent?.full_name ?? '';
-        if (!upstreamRepoInput && !parentRepo) {
+        if (!branchMode && !upstreamRepoInput && !parentRepo) {
             throw new Error(`${forkOwner}/${forkRepo} does not appear to be a fork. ` +
-                `Set the 'upstream-repo' input to sync from a specific repository.`);
+                `Set the 'upstream-repo' input to sync from a specific repository, ` +
+                `or 'source-branch' to sync between branches of this repository.`);
         }
     }
-    const upstreamRepo = upstreamRepoInput || parentRepo;
-    let upstreamBranch = upstreamBranchInput;
+    // Branch-to-branch mode: the source is a branch of the repository the action runs in.
+    const upstreamRepo = branchMode ? `${forkOwner}/${forkRepo}` : upstreamRepoInput || parentRepo;
+    let upstreamBranch = branchMode ? sourceBranchInput : upstreamBranchInput;
     if (!upstreamBranch) {
         const { owner, repo } = splitRepository(upstreamRepo);
         core.info(`Looking up the default branch of ${upstreamRepo} …`);
@@ -30195,9 +30202,17 @@ async function run() {
         upstreamBranch = upstream.default_branch;
     }
     const targetBranch = targetBranchInput || forkDefaultBranch;
-    const headBranch = core.getInput('head-branch').trim() || `sync/upstream-${upstreamBranch}`;
+    if (branchMode && sourceBranchInput === targetBranch) {
+        throw new Error(`source-branch ("${sourceBranchInput}") must differ from target-branch ("${targetBranch}").`);
+    }
+    const headBranch = core.getInput('head-branch').trim() ||
+        (branchMode ? `sync/${sourceBranchInput}-into-${targetBranch}` : `sync/upstream-${upstreamBranch}`);
     if (headBranch === targetBranch) {
         throw new Error(`head-branch ("${headBranch}") must differ from target-branch ("${targetBranch}").`);
+    }
+    if (branchMode && headBranch === sourceBranchInput) {
+        throw new Error(`head-branch ("${headBranch}") must differ from source-branch ("${sourceBranchInput}"): ` +
+            'the head branch is force-pushed on every run, so it would overwrite the source branch.');
     }
     const mergeStrategy = core.getInput('merge-strategy').trim();
     if (mergeStrategy !== 'merge' && mergeStrategy !== 'tip') {
