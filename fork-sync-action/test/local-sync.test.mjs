@@ -220,5 +220,120 @@ function parseOutputFile(file) {
   console.log('ok  6 - custom head-branch is pushed')
 }
 
+// --- 7. branch-to-branch sync (source-branch) -----------------------------------
+{
+  git(forkWork, 'checkout', '-q', '-b', 'develop')
+  commitFile(forkWork, 'branch-sync.txt', 'work on develop', 'd1: develop commit')
+  git(forkWork, 'push', '-q', 'origin', 'develop')
+  const r = runAction({
+    'INPUT_UPSTREAM-REPO': '',
+    'INPUT_UPSTREAM-BRANCH': '',
+    'INPUT_SOURCE-BRANCH': 'develop',
+    'INPUT_TARGET-BRANCH': 'main',
+    'INPUT_SKIP-PR': 'true',
+  })
+  assert.equal(r.exitCode, 0, `scenario 7 should succeed\n${r.output}`)
+  assert.equal(r.outputs.status, 'synced')
+  assert.equal(
+    r.outputs['head-sha'],
+    git(FORK, 'rev-parse', 'refs/heads/develop'),
+    'head should fast-forward to the source branch tip'
+  )
+  assert.equal(r.outputs['commit-count'], '1')
+  assert.equal(
+    git(FORK, 'rev-parse', 'refs/heads/main'),
+    r.outputs['target-sha'],
+    'target branch must stay untouched'
+  )
+  assert.equal(
+    r.outputs['head-sha'],
+    git(FORK, 'rev-parse', 'refs/heads/sync/develop-into-main'),
+    'default head branch should be sync/<source>-into-<target>'
+  )
+  console.log('ok  7 - branch-to-branch sync: source-branch fast-forwards into sync/<source>-into-<target>')
+}
+
+// --- 7b. branch sync: target already contains source -> up-to-date ---------------
+{
+  git(forkWork, 'fetch', '-q', 'origin')
+  git(forkWork, 'checkout', '-q', 'main')
+  git(forkWork, 'merge', '-q', '--ff-only', 'origin/sync/develop-into-main')
+  git(forkWork, 'push', '-q', 'origin', 'main')
+  const r = runAction({
+    'INPUT_UPSTREAM-REPO': '',
+    'INPUT_UPSTREAM-BRANCH': '',
+    'INPUT_SOURCE-BRANCH': 'develop',
+    'INPUT_TARGET-BRANCH': 'main',
+    'INPUT_SKIP-PR': 'true',
+  })
+  assert.equal(r.exitCode, 0, `scenario 7b should succeed\n${r.output}`)
+  assert.equal(r.outputs.status, 'up-to-date')
+  assert.equal(r.outputs.pushed, 'false')
+  console.log('ok 7b - branch sync: target already contains source -> up-to-date, pushes nothing')
+}
+
+// --- 8. branch sync: conflicting merge -> head falls back to source tip -----------
+{
+  git(forkWork, 'checkout', '-q', 'develop')
+  commitFile(forkWork, 'shared.txt', 'develop version', 'd2: develop edits shared.txt')
+  git(forkWork, 'push', '-q', 'origin', 'develop')
+  git(forkWork, 'checkout', '-q', 'main')
+  commitFile(forkWork, 'shared.txt', 'main version', 'm1: main edits shared.txt')
+  git(forkWork, 'push', '-q', 'origin', 'main')
+
+  const r = runAction({
+    'INPUT_UPSTREAM-REPO': '',
+    'INPUT_UPSTREAM-BRANCH': '',
+    'INPUT_SOURCE-BRANCH': 'develop',
+    'INPUT_TARGET-BRANCH': 'main',
+    'INPUT_SKIP-PR': 'true',
+  })
+  assert.equal(r.exitCode, 0, `scenario 8 should succeed\n${r.output}`)
+  assert.equal(r.outputs.status, 'conflicts')
+  assert.equal(
+    r.outputs['head-sha'],
+    git(FORK, 'rev-parse', 'refs/heads/develop'),
+    'head should fall back to the source branch tip'
+  )
+  console.log('ok  8 - branch sync: conflicting merge falls back to the source branch tip')
+}
+
+// --- 9. branch sync: source-branch == target-branch -> error ----------------------
+{
+  const r = runAction({
+    'INPUT_UPSTREAM-REPO': '',
+    'INPUT_UPSTREAM-BRANCH': '',
+    'INPUT_SOURCE-BRANCH': 'main',
+    'INPUT_TARGET-BRANCH': 'main',
+    'INPUT_SKIP-PR': 'true',
+  })
+  assert.equal(r.exitCode, 1, 'scenario 9 should fail')
+  assert.ok(r.output.includes('must differ from target-branch'), `unexpected output: ${r.output}`)
+  console.log('ok  9 - source-branch equal to target-branch is rejected')
+}
+
+// --- 9b. branch sync combined with upstream inputs -> error -----------------------
+{
+  const r = runAction({ 'INPUT_SOURCE-BRANCH': 'develop', 'INPUT_SKIP-PR': 'true' })
+  assert.equal(r.exitCode, 1, 'scenario 9b should fail')
+  assert.ok(r.output.includes('cannot be combined'), `unexpected output: ${r.output}`)
+  console.log('ok 9b - source-branch combined with upstream-repo/upstream-branch is rejected')
+}
+
+// --- 9c. branch sync: head-branch == source-branch -> error ------------------------
+{
+  const r = runAction({
+    'INPUT_UPSTREAM-REPO': '',
+    'INPUT_UPSTREAM-BRANCH': '',
+    'INPUT_SOURCE-BRANCH': 'develop',
+    'INPUT_TARGET-BRANCH': 'main',
+    'INPUT_HEAD-BRANCH': 'develop',
+    'INPUT_SKIP-PR': 'true',
+  })
+  assert.equal(r.exitCode, 1, 'scenario 9c should fail')
+  assert.ok(r.output.includes('must differ from source-branch'), `unexpected output: ${r.output}`)
+  console.log('ok 9c - head-branch equal to source-branch is rejected (would overwrite it)')
+}
+
 rmSync(ROOT, { recursive: true, force: true })
 console.log('\nAll local scenarios passed.')

@@ -2,7 +2,9 @@
 
 A GitHub Action that keeps a **fork** (repo B) up to date with its **upstream / parent**
 repository (repo A) by opening a **pull request** that carries the incoming commits —
-so nothing lands on your fork's branches without review.
+so nothing lands on your fork's branches without review. It also syncs **one branch
+into another** of the same repository (e.g. `develop` into `main`) the same way:
+as a reviewable pull request.
 
 ```
 repo A (upstream)                         repo B (fork)
@@ -23,6 +25,8 @@ runtime.
 1. Resolves the upstream repository — either from the `upstream-repo` input or
    automatically as the parent of the repository the workflow runs in — and both
    branch names (upstream's and the fork's default branches unless overridden).
+   In branch-to-branch mode (`source-branch`), the source is simply a branch of
+   the current repository instead.
 2. Creates a throwaway git workspace, fetches the fork's `target-branch` and the
    upstream branch. No checkout of your repo needed.
 3. If the fork already contains everything from upstream → exits with
@@ -110,7 +114,45 @@ jobs:
           target-branch: ${{ inputs.target-branch }}
 ```
 
-### 3. Fully pinned repositories, branches and pull-request metadata
+### 3. Branch-to-branch sync within one repository
+
+The same machinery also works between two branches of the *same* repository:
+set `source-branch` and the action opens (or updates) a pull request that
+carries every commit `source-branch` is ahead of `target-branch` — e.g. a
+rolling "develop into main" PR:
+
+```yaml
+name: Sync develop into main
+
+on:
+  schedule:
+    - cron: "30 7 * * 1"   # Mondays 07:30 UTC
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+  pull-requests: write
+
+concurrency:
+  group: sync-develop-into-main
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: YOUR_USERNAME/fork-sync-action@v1
+        with:
+          source-branch: develop
+          target-branch: main
+```
+
+The pull request head is a dedicated branch (`sync/develop-into-main` by
+default) that the action force-pushes; your `develop` branch is never
+modified. Everything else behaves like fork mode: fast-forward when possible,
+`status=conflicts` with the head pointed at the source tip when the branches
+diverge, and one rolling PR per branch pair.
+
+### 4. Fully pinned repositories, branches and pull-request metadata
 
 Works even when the repo running the workflow is *not* a GitHub fork (any repo
 can pull from any other repo it can read):
@@ -127,7 +169,7 @@ can pull from any other repo it can read):
           assignees: rui
 ```
 
-### 4. Private upstream repository
+### 5. Private upstream repository
 
 The default `github.token` can only read the upstream repo if it is public (or
 in the same org with matching permissions). For a private upstream, pass a PAT
@@ -142,7 +184,7 @@ that can read it:
 The main `token` (used for pushing the branch and opening the PR in the fork)
 still defaults to `github.token`.
 
-### 5. React to the result: auto-merge clean syncs, warn on conflicts
+### 6. React to the result: auto-merge clean syncs, warn on conflicts
 
 ```yaml
 jobs:
@@ -169,7 +211,7 @@ jobs:
         run: echo "Fork is already up to date."
 ```
 
-### 6. CI for the action itself (typecheck, build, offline tests)
+### 7. CI for the action itself (typecheck, build, offline tests)
 
 ```yaml
 name: CI
@@ -192,7 +234,7 @@ jobs:
       - run: git diff --exit-code -- dist   # fail if dist/ was not committed
 ```
 
-### 7. Trying it out safely: dry-run
+### 8. Trying it out safely: dry-run
 
 Runs the whole sync logic (fetch, merge, conflict detection) but pushes nothing
 and opens no pull request — good for a first run or a smoke test:
@@ -213,8 +255,9 @@ request yourself.
 | `token` | no | `${{ github.token }}` | Token for repo info, pushing the branch and opening the PR. Needs `contents:write`, `pull-requests:write`. |
 | `upstream-repo` | no | fork's parent | Upstream repository as `owner/name`. |
 | `upstream-branch` | no | upstream default branch | Branch on the upstream repo to pull from. |
+| `source-branch` | no | — | Branch-to-branch mode: sync this branch of the current repository into `target-branch`, instead of syncing from an upstream. Cannot be combined with `upstream-repo`/`upstream-branch`. |
 | `target-branch` | no | fork default branch | Branch on the fork to update (PR base). |
-| `head-branch` | no | `sync/upstream-<upstream-branch>` | Branch on the fork carrying the changes (PR head). |
+| `head-branch` | no | `sync/upstream-<upstream-branch>` | Branch on the fork carrying the changes (PR head). `sync/<source-branch>-into-<target-branch>` in branch-to-branch mode. |
 | `merge-strategy` | no | `merge` | `merge`: merge upstream into the target branch (fast-forward when possible). `tip`: head points at upstream's tip; divergence shows as conflicts in the PR. |
 | `fail-on-conflict` | no | `false` | Fail instead of opening a conflicted pull request. |
 | `upstream-token` | no | `token` | Separate token to fetch from a private upstream. |
@@ -233,7 +276,7 @@ request yourself.
 | `pull-request-number` | Number of the opened/updated PR (empty when none). |
 | `pull-request-url` | URL of the opened/updated PR (empty when none). |
 | `head-sha` | SHA of the produced head branch. |
-| `target-sha` / `upstream-sha` | SHAs of the target and upstream branches. |
+| `target-sha` / `upstream-sha` | SHAs of the target and upstream branches (in branch-to-branch mode, `upstream-sha` is the source branch tip). |
 | `commit-count` | Commits the PR brings in. |
 | `pushed` | `true` when the head branch was pushed. |
 
@@ -301,8 +344,9 @@ npm test              # rebuild + offline end-to-end scenarios
 remotes (an upstream and a diverged fork), runs the compiled action exactly the
 way the runner would (inputs via `INPUT_*` env vars, outputs parsed back from
 `GITHUB_OUTPUT`), and covers: merge sync, up-to-date, conflict fallback to
-upstream tip, `fail-on-conflict`, the `tip` strategy, dry-run, and custom head
-branches. It needs no network and no GitHub API calls.
+upstream tip, `fail-on-conflict`, the `tip` strategy, dry-run, custom head
+branches, and branch-to-branch sync (fast-forward, up-to-date, conflict
+fallback, and input validation). It needs no network and no GitHub API calls.
 
 ### 2. Static validation with actionlint
 
