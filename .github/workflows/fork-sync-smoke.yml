@@ -1,15 +1,14 @@
 # Live smoke test for fork-sync-action.
 #
-# Runs the action from this repository (local reference: ./fork-sync-action)
+# Runs the action from this repository (local reference: ./)
 # in dry-run mode against a real public upstream: it performs the real
 # fetch + merge and reports status/outputs, but pushes nothing and opens
 # no pull request. Trigger it from the Actions tab ("Run workflow") or let
 # it run on pushes/PRs that touch the action.
 #
-# Note: GitHub only reads workflows from .github/workflows/ at the repository
-# root, which is why this file is not inside fork-sync-action/. When the
-# action moves to its own repository, move this file along and change
-# `uses: ./fork-sync-action` to `uses: ./`.
+# Note: the action is served from the repository root (action.yml at the top
+# level). If it ever moves to its own repository, move this file along and
+# update the reference.
 
 name: fork-sync smoke test
 
@@ -17,11 +16,17 @@ on:
   push:
     branches: [main]
     paths:
-      - "fork-sync-action/**"
+      - "action.yml"
+      - "src/**"
+      - "dist/**"
+      - "test/**"
       - ".github/workflows/fork-sync-smoke.yml"
   pull_request:
     paths:
-      - "fork-sync-action/**"
+      - "action.yml"
+      - "src/**"
+      - "dist/**"
+      - "test/**"
       - ".github/workflows/fork-sync-smoke.yml"
   workflow_dispatch:
     inputs:
@@ -40,7 +45,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - id: sync
-        uses: ./fork-sync-action
+        uses: ./
         with:
           upstream-repo: ${{ github.event.inputs['upstream-repo'] || 'octocat/Hello-World' }}
           target-branch: main
@@ -65,7 +70,7 @@ jobs:
       - uses: actions/checkout@v5
 
       - id: sync
-        uses: ./fork-sync-action
+        uses: ./
         with:
           source-branch: ${{ github.head_ref }}
           target-branch: main
