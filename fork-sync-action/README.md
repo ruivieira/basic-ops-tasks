@@ -1,7 +1,7 @@
 # fork-sync-action
 
 A GitHub Action that keeps a **fork** (repo B) up to date with its **upstream / parent**
-repository (repo A) by opening a **pull request** that carries the incoming commits —
+repository (repo A) by opening a **pull request** that carries the incoming commits,
 so nothing lands on your fork's branches without review. It also syncs **one branch
 into another** of the same repository (e.g. `develop` into `main`) the same way:
 as a reviewable pull request.
@@ -22,8 +22,8 @@ runtime.
 
 ## What it does
 
-1. Resolves the upstream repository — either from the `upstream-repo` input or
-   automatically as the parent of the repository the workflow runs in — and both
+1. Resolves the upstream repository (either from the `upstream-repo` input or
+   automatically as the parent of the repository the workflow runs in) and both
    branch names (upstream's and the fork's default branches unless overridden).
    In branch-to-branch mode (`source-branch`), the source is simply a branch of
    the current repository instead.
@@ -31,14 +31,14 @@ runtime.
    upstream branch. No checkout of your repo needed.
 3. If the fork already contains everything from upstream → exits with
    `status=up-to-date` and changes nothing.
-4. Otherwise creates (or resets) a sync branch — `sync/upstream-<branch>` by
-   default — at the target branch and merges upstream into it:
+4. Otherwise creates (or resets) a sync branch (`sync/upstream-<branch>` by
+   default) at the target branch and merges upstream into it:
    fast-forwards when the fork is strictly behind, otherwise creates a merge
    commit. On conflicts, the sync branch is pointed at upstream's tip instead,
    so the pull request surfaces the conflicts for you to resolve.
 5. Force-pushes the sync branch to the fork (the branch is owned by the action,
-   so re-runs are idempotent) and opens a pull request `sync/... → target-branch`
-   — or updates the existing open one.
+   so re-runs are idempotent) and opens a pull request `sync/... → target-branch`,
+   or updates the existing open one.
 6. Sets outputs (`status`, `pull-request-url`, `commit-count`, …) and writes a
    job summary.
 
@@ -67,13 +67,13 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: YOUR_USERNAME/fork-sync-action@v1
+      - uses: ruivieira/fork-sync-action@v1
 ```
 
-That's all — upstream repo, upstream branch and target branch are all
+That's all: upstream repo, upstream branch and target branch are all
 auto-detected. Remember to enable Actions in the fork once
 (*Settings → Actions → General → Allow all actions and workflows*), because
-GitHub disables workflows in forks by default — and while you're there, tick
+GitHub disables workflows in forks by default. While you're there, tick
 *Allow GitHub Actions to create and approve pull requests* (same page,
 *Workflow permissions*), or the run will fail when opening the pull request
 (see [Notes and caveats](#notes-and-caveats)).
@@ -108,7 +108,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: YOUR_USERNAME/fork-sync-action@v1
+      - uses: ruivieira/fork-sync-action@v1
         with:
           upstream-branch: ${{ inputs.upstream-branch }}
           target-branch: ${{ inputs.target-branch }}
@@ -118,7 +118,7 @@ jobs:
 
 The same machinery also works between two branches of the *same* repository:
 set `source-branch` and the action opens (or updates) a pull request that
-carries every commit `source-branch` is ahead of `target-branch` — e.g. a
+carries every commit `source-branch` is ahead of `target-branch`, e.g. a
 rolling "develop into main" PR:
 
 ```yaml
@@ -140,7 +140,7 @@ jobs:
   sync:
     runs-on: ubuntu-latest
     steps:
-      - uses: YOUR_USERNAME/fork-sync-action@v1
+      - uses: ruivieira/fork-sync-action@v1
         with:
           source-branch: develop
           target-branch: main
@@ -152,13 +152,78 @@ modified. Everything else behaves like fork mode: fast-forward when possible,
 `status=conflicts` with the head pointed at the source tip when the branches
 diverge, and one rolling PR per branch pair.
 
+More branch-to-branch recipes:
+
+**Pick the branches when triggering manually:**
+
+```yaml
+name: Sync branches
+
+on:
+  workflow_dispatch:
+    inputs:
+      source-branch:
+        description: "Branch that carries the changes"
+        default: develop
+      target-branch:
+        description: "Branch that receives them"
+        default: main
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: ruivieira/fork-sync-action@v1
+        with:
+          source-branch: ${{ inputs.source-branch }}
+          target-branch: ${{ inputs.target-branch }}
+```
+
+**Several branch pairs from one workflow (matrix):** each pair gets its own
+head branch and its own rolling pull request, so the jobs can run in
+parallel:
+
+```yaml
+on:
+  workflow_dispatch: {}
+  schedule:
+    - cron: "0 7 * * 1"   # Mondays 07:30 UTC
+
+permissions:
+  contents: write
+  pull-requests: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        include:
+          - { source: develop, target: main }      # integrate develop
+          - { source: main, target: release/1.x }  # propagate to the release branch
+    steps:
+      - uses: ruivieira/fork-sync-action@v1
+        with:
+          source-branch: ${{ matrix.source }}
+          target-branch: ${{ matrix.target }}
+```
+
+**Reacting to the result** works exactly like the auto-merge example in fork
+mode (example 6 below): the outputs (`status`, `pull-request-number`,
+`commit-count`, …) are identical in both modes, so the auto-merge and
+conflict-warning steps apply unchanged.
+
 ### 4. Fully pinned repositories, branches and pull-request metadata
 
 Works even when the repo running the workflow is *not* a GitHub fork (any repo
 can pull from any other repo it can read):
 
 ```yaml
-      - uses: YOUR_USERNAME/fork-sync-action@v1
+      - uses: ruivieira/fork-sync-action@v1
         with:
           upstream-repo: octocat/Hello-World
           upstream-branch: develop
@@ -176,7 +241,7 @@ in the same org with matching permissions). For a private upstream, pass a PAT
 that can read it:
 
 ```yaml
-      - uses: YOUR_USERNAME/fork-sync-action@v1
+      - uses: ruivieira/fork-sync-action@v1
         with:
           upstream-token: ${{ secrets.UPSTREAM_READ_PAT }}
 ```
@@ -192,7 +257,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - id: sync
-        uses: YOUR_USERNAME/fork-sync-action@v1
+        uses: ruivieira/fork-sync-action@v1
 
       - name: Auto-merge clean sync pull requests
         if: steps.sync.outputs.status == 'synced' && steps.sync.outputs.pull-request-url != ''
@@ -204,7 +269,7 @@ jobs:
       - name: Warn on conflicts
         if: steps.sync.outputs.status == 'conflicts'
         run: |
-          echo "::warning::Upstream diverged — resolve conflicts in ${{ steps.sync.outputs.pull-request-url }}"
+          echo "::warning::Upstream diverged; resolve conflicts in ${{ steps.sync.outputs.pull-request-url }}"
 
       - name: Nothing to do
         if: steps.sync.outputs.status == 'up-to-date'
@@ -237,10 +302,10 @@ jobs:
 ### 8. Trying it out safely: dry-run
 
 Runs the whole sync logic (fetch, merge, conflict detection) but pushes nothing
-and opens no pull request — good for a first run or a smoke test:
+and opens no pull request; good for a first run or a smoke test:
 
 ```yaml
-      - uses: YOUR_USERNAME/fork-sync-action@v1
+      - uses: ruivieira/fork-sync-action@v1
         with:
           dry-run: true
 ```
@@ -255,7 +320,7 @@ request yourself.
 | `token` | no | `${{ github.token }}` | Token for repo info, pushing the branch and opening the PR. Needs `contents:write`, `pull-requests:write`. |
 | `upstream-repo` | no | fork's parent | Upstream repository as `owner/name`. |
 | `upstream-branch` | no | upstream default branch | Branch on the upstream repo to pull from. |
-| `source-branch` | no | — | Branch-to-branch mode: sync this branch of the current repository into `target-branch`, instead of syncing from an upstream. Cannot be combined with `upstream-repo`/`upstream-branch`. |
+| `source-branch` | no | (none) | Branch-to-branch mode: sync this branch of the current repository into `target-branch`, instead of syncing from an upstream. Cannot be combined with `upstream-repo`/`upstream-branch`. |
 | `target-branch` | no | fork default branch | Branch on the fork to update (PR base). |
 | `head-branch` | no | `sync/upstream-<upstream-branch>` | Branch on the fork carrying the changes (PR head). `sync/<source-branch>-into-<target-branch>` in branch-to-branch mode. |
 | `merge-strategy` | no | `merge` | `merge`: merge upstream into the target branch (fast-forward when possible). `tip`: head points at upstream's tip; divergence shows as conflicts in the PR. |
@@ -263,8 +328,8 @@ request yourself.
 | `upstream-token` | no | `token` | Separate token to fetch from a private upstream. |
 | `pr-title` | no | `Sync <upstream>:<branch> into <target>` | Pull request title. |
 | `pr-body` | no | generated summary | Pull request body (commit list + conflict banner). |
-| `labels` | no | — | Comma-separated labels for the PR. |
-| `assignees` | no | — | Comma-separated usernames to assign. |
+| `labels` | no | (none) | Comma-separated labels for the PR. |
+| `assignees` | no | (none) | Comma-separated usernames to assign. |
 | `dry-run` | no | `false` | Compute everything, push nothing, open no PR. |
 | `skip-pr` | no | `false` | Push the sync branch but open no PR. |
 
@@ -284,15 +349,15 @@ request yourself.
 
 - **Workflow permissions**: the workflow needs `contents: write` (push the sync
   branch) and `pull-requests: write` (open the PR). The examples include them.
-- **Repo setting — let Actions create PRs**: the workflow-level
+- **Repo setting: let Actions create PRs**: the workflow-level
   `pull-requests: write` is not enough on its own. The repository (or org) must
   also have *Settings → Actions → General → Workflow permissions → Allow
   GitHub Actions to create and approve pull requests* enabled. On fresh repos
   this defaults to **off**, and the run fails with `GitHub Actions is not
   permitted to create or approve pull requests` right after pushing the branch
-  (found in live testing). Fix it once per repo — or at org level:
+  (found in live testing). Fix it once per repo, or at org level:
   `gh api -X PUT repos/OWNER/REPO/actions/permissions/workflow -f default_workflow_permissions=write -F can_approve_pull_request_reviews=true`
-- **PRs created with `github.token` do not trigger other workflows** — GitHub
+- **PRs created with `github.token` do not trigger other workflows**: GitHub
   blocks workflow-triggered-by-workflow recursion. If the sync PR must run your
   CI (e.g. before auto-merge), pass a PAT as `token`.
 - **The head branch is force-pushed** on every run. Don't commit to
@@ -301,7 +366,7 @@ request yourself.
   (branch is force-pushed, body refreshed) instead of piling up new PRs.
 - **Upstream default branch changes** are picked up automatically when you don't
   pin `upstream-branch`.
-- Works on GitHub Enterprise Server too — the action honors
+- Works on GitHub Enterprise Server too: the action honors
   `GITHUB_SERVER_URL`/`GITHUB_API_URL`.
 
 ## Publishing this action
@@ -310,20 +375,20 @@ request yourself.
 GitHub. Two options:
 
 1. **Own repository (recommended)**: push the contents of this folder to e.g.
-   `YOUR_USERNAME/fork-sync-action`, commit the built `dist/`, then tag it:
+   `ruivieira/fork-sync-action`, commit the built `dist/`, then tag it:
 
    ```bash
    git tag v1 && git push origin v1
    # later: git tag -f v1 && git push -f origin v1   # to move the tag
    ```
 
-   Then reference it as `YOUR_USERNAME/fork-sync-action@v1`.
+   Then reference it as `ruivieira/fork-sync-action@v1`.
 
 2. **Subdirectory of an existing repo** (this is how it lives today, inside
-   `basic-ops-tasks`): reference it with the path syntax —
-   `uses: YOUR_USERNAME/basic-ops-tasks/fork-sync-action@main`.
+   `basic-ops-tasks`): reference it with the path syntax:
+   `uses: ruivieira/basic-ops-tasks/fork-sync-action@main`.
 
-`dist/index.js` is the artifact the runner executes — always rebuild
+`dist/index.js` is the artifact the runner executes; always rebuild
 (`npm run build`) and commit it together with `src/` changes.
 
 ## Testing
@@ -352,19 +417,19 @@ fallback, and input validation). It needs no network and no GitHub API calls.
 
 [actionlint](https://github.com/rhysd/actionlint) lints workflow files and,
 through the local `uses: ./fork-sync-action` reference, cross-checks every
-`with:` input and `steps.*.outputs.*` reference against `action.yml` — it
-catches typos in input names, invalid expression contexts, and bad YAML before
+`with:` input and `steps.*.outputs.*` reference against `action.yml`, catching
+typos in input names, invalid expression contexts, and bad YAML before
 GitHub ever sees them:
 
 ```bash
 curl -fsSL "$(curl -fsSL https://api.github.com/repos/rhysd/actionlint/releases/latest \
-  | grep -oE 'https://[^"]+_linux_amd64\.tar\.gz' | head -1)" | tar xz -C ~/.local/bin actionlint
+  | grep -oE 'https://[^\"]+_linux_amd64\.tar\.gz' | head -1)" | tar xz -C ~/.local/bin actionlint
 actionlint    # run from the repository root (.github/workflows is picked up automatically)
 ```
 
 ### 3. Live smoke test, zero side effects (dry-run)
 
-`.github/workflows/fork-sync-smoke.yml` (at the repository root — GitHub only
+`.github/workflows/fork-sync-smoke.yml` (at the repository root; GitHub only
 reads workflows from `<repo>/.github/workflows/`, not from subdirectories)
 runs this action from a real GitHub runner against a real public upstream in
 `dry-run: true` mode: it does the actual fetch and merge and reports
@@ -382,7 +447,7 @@ The only level that exercises the push and the pull request for real:
 
 1. Create a sandbox upstream repo A and fork it to get B (or use any existing
    repo as B and point `upstream-repo` at any repo it can read). Enable
-   Actions in B — GitHub disables workflows in forks until you do.
+   Actions in B: GitHub disables workflows in forks until you do.
 2. Add the sync workflow to B. While iterating, reference the action by
    branch, not by tag:
    `uses: ruivieira/basic-ops-tasks/fork-sync-action@your-branch`.
@@ -400,34 +465,6 @@ Gotchas that only show up at this level:
   tag afterwards (`git tag -f v1 && git push -f origin v1`).
 
 [act](https://github.com/nektos/act) (Docker/Podman) can also run workflows
-locally, which is handy for workflow-syntax issues — but the parts that matter
+locally, which is handy for workflow-syntax issues, but the parts that matter
 here (hub API calls, pull request creation) still talk to real GitHub, so
 level 4 with sandbox repos remains the honest test.
-
-## Why TypeScript + actions/toolkit?
-
-- **actions/toolkit is GitHub's official framework for writing Actions**
-  (`@actions/core` for inputs/outputs/logging/failures, `@actions/github` for a
-  pre-authenticated Octokit). Everything first-party — `actions/checkout`,
-  `actions/setup-node`, … — is built with it, and it is the best-supported path.
-- **Probot is not an Actions framework.** Probot is a framework for *GitHub
-  Apps*: long-lived services that react to webhook events (installations, issue
-  comments, …). Use it (or plain Octokit) when you need event-driven bot
-  behavior; for something that runs on a schedule inside a workflow, it's the
-  wrong tool.
-- Alternatives for Actions specifically: a **composite action** of bash + `gh`
-  CLI (zero build step, fine for glue code, but stringly-typed and harder to
-  test), a **Docker action** (any language, but ~10–30 s of image pull per run),
-  or **Go/Rust** (single static binary, but no official toolkit and more
-  boilerplate). For "git + REST API on a timer", TypeScript + toolkit bundled
-  with `ncc` is the sweet spot: type-safe, unit-testable, starts in ~1 s.
-
-## Alternatives worth knowing
-
-- GitHub's built-in **"Sync fork"** button and the
-  `POST /repos/{owner}/{repo}/merge-upstream` REST endpoint merge upstream
-  *directly* into a branch — no pull request, no review. That's the behavior to
-  reach for when you want no review step.
-- Existing actions such as `repo-sync/github-sync` or
-  `aormsby/Fork-Sync-With-Upstream-action` push upstream commits straight onto
-  a branch. This action differs on purpose: changes arrive as a reviewable PR.
