@@ -1,0 +1,58 @@
+# Live smoke test for fork-sync-action.
+#
+# Runs the action from this repository (local reference: ./fork-sync-action)
+# in dry-run mode against a real public upstream: it performs the real
+# fetch + merge and reports status/outputs, but pushes nothing and opens
+# no pull request. Trigger it from the Actions tab ("Run workflow") or let
+# it run on pushes/PRs that touch the action.
+#
+# Note: GitHub only reads workflows from .github/workflows/ at the repository
+# root, which is why this file is not inside fork-sync-action/. When the
+# action moves to its own repository, move this file along and change
+# `uses: ./fork-sync-action` to `uses: ./`.
+
+name: fork-sync smoke test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "fork-sync-action/**"
+      - ".github/workflows/fork-sync-smoke.yml"
+  pull_request:
+    paths:
+      - "fork-sync-action/**"
+      - ".github/workflows/fork-sync-smoke.yml"
+  workflow_dispatch:
+    inputs:
+      upstream-repo:
+        description: "Public upstream repo to pull from (owner/name)"
+        required: false
+        default: "octocat/Hello-World"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: sync
+        uses: ./fork-sync-action
+        with:
+          upstream-repo: ${{ github.event.inputs['upstream-repo'] || 'octocat/Hello-World' }}
+          target-branch: main
+          dry-run: true
+
+      - name: Assert the action produced sane outputs
+        run: |
+          echo "status       = ${{ steps.sync.outputs.status }}"
+          echo "head-sha     = ${{ steps.sync.outputs.head-sha }}"
+          echo "commit-count = ${{ steps.sync.outputs.commit-count }}"
+          echo "pushed       = ${{ steps.sync.outputs.pushed }}"
+          test -n "${{ steps.sync.outputs.status }}"
+          test -n "${{ steps.sync.outputs.head-sha }}"
+          test "${{ steps.sync.outputs.pushed }}" = "false"
+          test -z "${{ steps.sync.outputs.pull-request-url }}"
