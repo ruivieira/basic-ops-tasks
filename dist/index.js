@@ -30095,6 +30095,14 @@ function errorMessage(error) {
 function redact(text) {
     return secret ? text.split(secret).join('***') : text;
 }
+/** Icon shown next to the status in the job summary. */
+function statusIcon(status) {
+    if (status === 'up-to-date')
+        return '✅';
+    if (status === 'synced')
+        return '🔄';
+    return '⚠️';
+}
 function splitRepository(fullName) {
     const [owner, repo] = fullName.split('/');
     return { owner, repo };
@@ -30151,7 +30159,7 @@ function buildPullRequestBody(result, server, upstreamRepo, upstreamBranch, targ
     return (`${conflictBanner}This pull request brings **${result.commitCount} commit(s)** from ` +
         `[${upstreamRepo}](${server}/${upstreamRepo}) \`${upstreamBranch}\` into \`${targetBranch}\`.\n\n` +
         `### Incoming commits\n${commits.join('\n')}${overflow}\n\n---\n` +
-        `Automated by the fork-sync action.`);
+        `Automated by the [basic-ops-tasks](${server}/ruivieira/basic-ops-tasks)/fork-sync action.`);
 }
 async function run() {
     const token = core.getInput('token');
@@ -30308,9 +30316,11 @@ async function run() {
     await core.summary
         .addHeading('Fork sync', 2)
         .addList([
-        `status: ${result.status}`,
-        `upstream: ${upstreamRepo}:${upstreamBranch} @ ${result.upstreamSha.slice(0, 7)}`,
-        `target: ${forkOwner}/${forkRepo}:${targetBranch} @ ${result.targetSha.slice(0, 7)}`,
+        `${statusIcon(result.status)} status: ${result.status}`,
+        `upstream: [${upstreamRepo}:${upstreamBranch}](${server}/${upstreamRepo}/tree/${upstreamBranch}) @ ` +
+            `[${result.upstreamSha.slice(0, 7)}](${server}/${upstreamRepo}/commit/${result.upstreamSha})`,
+        `target: [${forkOwner}/${forkRepo}:${targetBranch}](${server}/${forkOwner}/${forkRepo}/tree/${targetBranch}) @ ` +
+            `[${result.targetSha.slice(0, 7)}](${server}/${forkOwner}/${forkRepo}/commit/${result.targetSha})`,
         `incoming commits: ${result.commitCount}`,
         `pull request: ${pullRequest ? pullRequest.html_url : 'none'}`,
     ])
