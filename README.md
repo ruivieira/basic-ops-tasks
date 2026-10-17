@@ -343,7 +343,7 @@ fails, as does `mode: branch` without `source-branch`).
 | `head-branch` | no | `sync/upstream-<upstream-branch>` | Branch carrying the changes (the pull request head). Defaults to `sync/<source-branch>-into-<target-branch>` in branch-to-branch mode. |
 | `merge-strategy` | no | `merge` | `merge`: merge the source into the target branch (fast-forward when possible). `tip`: head points at the source tip; divergence shows as conflicts in the PR. |
 | `fail-on-conflict` | no | `false` | Fail instead of opening a conflicted pull request. |
-| `pr-title` | no | `Sync <source>:<branch> into <target>` | Pull request title. |
+| `pr-title` | no | mode-dependent | Pull request title. Defaults: `sync(pull): Sync <upstream>:<branch> (upstream) into <target>` in fork mode, `sync(branch): Sync <source> into <target>` in branch mode. |
 | `pr-body` | no | generated summary | Pull request body (commit list + conflict banner). |
 | `labels` | no | (none) | Comma-separated labels for the PR. |
 | `assignees` | no | (none) | Comma-separated usernames to assign. |
