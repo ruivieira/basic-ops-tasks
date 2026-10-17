@@ -82,9 +82,9 @@ out
 .nuxt
 dist
 .output
-# fork-sync-action: its dist/ holds the compiled GitHub Action bundle — the
-# artifact the runner executes — so it must be tracked despite the rule above.
-!fork-sync-action/dist/
+# The root dist/ holds the compiled GitHub Action bundle: the artifact the
+# runner executes, so it must be tracked despite the rule above.
+!dist/
 
 # Gatsby files
 .cache/
