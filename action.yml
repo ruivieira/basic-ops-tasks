@@ -10,6 +10,14 @@ branding:
   color: 'purple'
 
 inputs:
+  mode:
+    description: >-
+      Which sync to run. "fork": pull from an upstream repository into this
+      one. "branch": sync "source-branch" into "target-branch" within this
+      repository. "auto" (default): branch mode when "source-branch" is set,
+      fork mode otherwise.
+    required: false
+    default: 'auto'
   token:
     description: >-
       Token used to read repository info, push the sync branch and open the

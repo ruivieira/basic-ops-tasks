@@ -335,5 +335,70 @@ function parseOutputFile(file) {
   console.log('ok 9c - head-branch equal to source-branch is rejected (would overwrite it)')
 }
 
+// --- 10. mode: branch without source-branch -> error ----------------------------
+{
+  const r = runAction({
+    'INPUT_MODE': 'branch',
+    'INPUT_UPSTREAM-REPO': '',
+    'INPUT_UPSTREAM-BRANCH': '',
+    'INPUT_TARGET-BRANCH': 'main',
+    'INPUT_SKIP-PR': 'true',
+  })
+  assert.equal(r.exitCode, 1, 'scenario 10 should fail')
+  assert.ok(r.output.includes("requires 'source-branch'"), `unexpected output: ${r.output}`)
+  console.log('ok 10 - mode: branch without source-branch is rejected')
+}
+
+// --- 10b. mode: fork combined with source-branch -> error -----------------------
+{
+  const r = runAction({
+    'INPUT_MODE': 'fork',
+    'INPUT_SOURCE-BRANCH': 'develop',
+    'INPUT_UPSTREAM-REPO': '',
+    'INPUT_UPSTREAM-BRANCH': '',
+    'INPUT_TARGET-BRANCH': 'main',
+    'INPUT_SKIP-PR': 'true',
+  })
+  assert.equal(r.exitCode, 1, 'scenario 10b should fail')
+  assert.ok(r.output.includes('cannot be combined'), `unexpected output: ${r.output}`)
+  console.log('ok 10b - mode: fork combined with source-branch is rejected')
+}
+
+// --- 10c. invalid mode value -> error -------------------------------------------
+{
+  const r = runAction({
+    'INPUT_MODE': 'branchs',
+    'INPUT_UPSTREAM-REPO': '',
+    'INPUT_UPSTREAM-BRANCH': '',
+    'INPUT_TARGET-BRANCH': 'main',
+    'INPUT_SKIP-PR': 'true',
+  })
+  assert.equal(r.exitCode, 1, 'scenario 10c should fail')
+  assert.ok(r.output.includes('mode must be'), `unexpected output: ${r.output}`)
+  console.log('ok 10c - invalid mode value is rejected')
+}
+
+// --- 10d. mode: branch runs the branch sync explicitly ---------------------------
+{
+  const r = runAction({
+    'INPUT_MODE': 'branch',
+    'INPUT_SOURCE-BRANCH': 'develop',
+    'INPUT_UPSTREAM-REPO': '',
+    'INPUT_UPSTREAM-BRANCH': '',
+    'INPUT_TARGET-BRANCH': 'main',
+    'INPUT_SKIP-PR': 'true',
+  })
+  assert.equal(r.exitCode, 0, `scenario 10d should succeed\n${r.output}`)
+  // develop and main still conflict (scenario 8 fixture), so the head falls
+  // back to the source tip; the routing is what this scenario pins.
+  assert.equal(r.outputs.status, 'conflicts')
+  assert.equal(
+    r.outputs['head-sha'],
+    git(FORK, 'rev-parse', 'refs/heads/develop'),
+    'explicit mode: branch must sync the source branch, not fall back to fork mode'
+  )
+  console.log('ok 10d - mode: branch runs the branch sync explicitly')
+}
+
 rmSync(ROOT, { recursive: true, force: true })
 console.log('\nAll local scenarios passed.')
