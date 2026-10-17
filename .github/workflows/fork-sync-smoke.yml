@@ -1,0 +1,88 @@
+# Live smoke test for fork-sync-action.
+#
+# Runs the action from this repository (local reference: ./)
+# in dry-run mode against a real public upstream: it performs the real
+# fetch + merge and reports status/outputs, but pushes nothing and opens
+# no pull request. Trigger it from the Actions tab ("Run workflow") or let
+# it run on pushes/PRs that touch the action.
+#
+# Note: the action is served from the repository root (action.yml at the top
+# level). If it ever moves to its own repository, move this file along and
+# update the reference.
+
+name: fork-sync smoke test
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "action.yml"
+      - "src/**"
+      - "dist/**"
+      - "test/**"
+      - ".github/workflows/fork-sync-smoke.yml"
+  pull_request:
+    paths:
+      - "action.yml"
+      - "src/**"
+      - "dist/**"
+      - "test/**"
+      - ".github/workflows/fork-sync-smoke.yml"
+  workflow_dispatch:
+    inputs:
+      upstream-repo:
+        description: "Public upstream repo to pull from (owner/name)"
+        required: false
+        default: "octocat/Hello-World"
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: sync
+        uses: ./
+        with:
+          mode: fork
+          upstream-repo: ${{ github.event.inputs['upstream-repo'] || 'octocat/Hello-World' }}
+          target-branch: main
+          dry-run: true
+
+      - name: Assert the action produced sane outputs
+        run: |
+          echo "status       = ${{ steps.sync.outputs.status }}"
+          echo "head-sha     = ${{ steps.sync.outputs.head-sha }}"
+          echo "commit-count = ${{ steps.sync.outputs.commit-count }}"
+          echo "pushed       = ${{ steps.sync.outputs.pushed }}"
+          test -n "${{ steps.sync.outputs.status }}"
+          test -n "${{ steps.sync.outputs.head-sha }}"
+          test "${{ steps.sync.outputs.pushed }}" = "false"
+          test -z "${{ steps.sync.outputs.pull-request-url }}"
+
+  # Branch-to-branch mode: dry-run sync of this PR's head branch into main.
+  smoke-branch-sync:
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v5
+
+      - id: sync
+        uses: ./
+        with:
+          mode: branch
+          source-branch: ${{ github.head_ref }}
+          target-branch: main
+          dry-run: true
+
+      - name: Assert the action produced sane outputs
+        run: |
+          echo "status       = ${{ steps.sync.outputs.status }}"
+          echo "commit-count = ${{ steps.sync.outputs.commit-count }}"
+          test -n "${{ steps.sync.outputs.status }}"
+          test -n "${{ steps.sync.outputs.head-sha }}"
+          test "${{ steps.sync.outputs.pushed }}" = "false"
+          test -z "${{ steps.sync.outputs.pull-request-url }}"
