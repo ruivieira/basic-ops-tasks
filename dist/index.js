@@ -30170,7 +30170,17 @@ async function run() {
     const upstreamBranchInput = core.getInput('upstream-branch').trim();
     const targetBranchInput = core.getInput('target-branch').trim();
     const sourceBranchInput = core.getInput('source-branch').trim();
-    const branchMode = sourceBranchInput !== '';
+    const modeInput = core.getInput('mode').trim() || 'auto';
+    if (modeInput !== 'auto' && modeInput !== 'fork' && modeInput !== 'branch') {
+        throw new Error(`mode must be "auto", "fork" or "branch", got "${modeInput}".`);
+    }
+    const branchMode = modeInput === 'branch' || (modeInput === 'auto' && sourceBranchInput !== '');
+    if (modeInput === 'branch' && !sourceBranchInput) {
+        throw new Error("The 'mode: branch' input requires 'source-branch' to be set.");
+    }
+    if (modeInput === 'fork' && sourceBranchInput) {
+        throw new Error("The 'mode: fork' input cannot be combined with 'source-branch'; use 'mode: branch' for branch-to-branch sync.");
+    }
     if (branchMode && (upstreamRepoInput || upstreamBranchInput)) {
         throw new Error("The 'source-branch' input (branch-to-branch sync) cannot be combined with 'upstream-repo' or 'upstream-branch'.");
     }

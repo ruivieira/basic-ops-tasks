@@ -47,6 +47,7 @@ jobs:
       - id: sync
         uses: ./
         with:
+          mode: fork
           upstream-repo: ${{ github.event.inputs['upstream-repo'] || 'octocat/Hello-World' }}
           target-branch: main
           dry-run: true
@@ -72,6 +73,7 @@ jobs:
       - id: sync
         uses: ./
         with:
+          mode: branch
           source-branch: ${{ github.head_ref }}
           target-branch: main
           dry-run: true

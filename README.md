@@ -126,7 +126,9 @@ jobs:
 The same machinery also works between two branches of the *same* repository:
 set `source-branch` and the action opens (or updates) a pull request that
 carries every commit `source-branch` is ahead of `target-branch`, e.g. a
-rolling "develop into main" PR:
+rolling "develop into main" PR. `mode: branch` is optional (the mode is
+auto-detected from `source-branch`), but it makes the intent explicit and
+fails fast if the other inputs contradict it:
 
 ```yaml
 name: Sync develop into main
@@ -149,6 +151,7 @@ jobs:
     steps:
       - uses: ruivieira/basic-ops-tasks@v1
         with:
+          mode: branch
           source-branch: develop
           target-branch: main
 ```
@@ -186,6 +189,7 @@ jobs:
     steps:
       - uses: ruivieira/basic-ops-tasks@v1
         with:
+          mode: branch
           source-branch: ${{ inputs.source-branch }}
           target-branch: ${{ inputs.target-branch }}
 ```
@@ -215,6 +219,7 @@ jobs:
     steps:
       - uses: ruivieira/basic-ops-tasks@v1
         with:
+          mode: branch
           source-branch: ${{ matrix.source }}
           target-branch: ${{ matrix.target }}
 ```
@@ -323,14 +328,16 @@ request yourself.
 ## Inputs
 
 GitHub Actions `with:` inputs are flat key/value strings; the platform has no
-nested `with.sync-branches.{…}` grouping. The two modes are separated by which
-inputs you set instead, and the action rejects runs that combine them
-(`source-branch` together with `upstream-repo`/`upstream-branch` fails).
+nested `with.sync-branches.{…}` grouping. The two modes are separated by the
+`mode` input plus which inputs you set, and the action rejects runs that
+combine them (`source-branch` together with `upstream-repo`/`upstream-branch`
+fails, as does `mode: branch` without `source-branch`).
 
 **Shared by both modes:**
 
 | Input | Required | Default | Description |
 |---|---|---|---|
+| `mode` | no | `auto` | `fork`: sync from an upstream repository. `branch`: sync `source-branch` into `target-branch` within this repository. `auto`: branch mode when `source-branch` is set, fork mode otherwise. |
 | `token` | no | `${{ github.token }}` | Token for repo info, pushing the branch and opening the PR. Needs `contents:write`, `pull-requests:write`. |
 | `target-branch` | no | fork default branch | Branch to update (the pull request base). |
 | `head-branch` | no | `sync/upstream-<upstream-branch>` | Branch carrying the changes (the pull request head). Defaults to `sync/<source-branch>-into-<target-branch>` in branch-to-branch mode. |
@@ -351,8 +358,8 @@ inputs you set instead, and the action rejects runs that combine them
 | `upstream-branch` | no | upstream default branch | Branch on the upstream repo to pull from. |
 | `upstream-token` | no | `token` | Separate token to fetch from a private upstream. |
 
-**Branch-to-branch mode** (sync within the current repository; activates when
-`source-branch` is set):
+**Branch-to-branch mode** (sync within the current repository; activates via
+`mode: branch`, or automatically when `source-branch` is set):
 
 | Input | Required | Default | Description |
 |---|---|---|---|
