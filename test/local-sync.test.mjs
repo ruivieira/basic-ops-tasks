@@ -448,5 +448,60 @@ function parseOutputFile(file) {
   console.log('ok 11c - custom pr-title overrides the default')
 }
 
+// --- 12. job summary: linked branches/commits and a status icon -----------------
+{
+  const r = runAction({ 'INPUT_SKIP-PR': 'true' })
+  assert.equal(r.exitCode, 0, `scenario 12 should succeed\n${r.output}`)
+  const summary = readFileSync(SUMMARY_FILE, 'utf8')
+  assert.ok(
+    summary.includes(`[acme/parent:main](${SERVER_URL}/acme/parent/tree/main)`),
+    `upstream branch should be linked\n${summary}`
+  )
+  assert.ok(
+    summary.includes(
+      `[${r.outputs['upstream-sha'].slice(0, 7)}](${SERVER_URL}/acme/parent/commit/${r.outputs['upstream-sha']})`
+    ),
+    `upstream commit should be linked\n${summary}`
+  )
+  assert.ok(
+    summary.includes(`[rui/fork:main](${SERVER_URL}/rui/fork/tree/main)`),
+    `target branch should be linked\n${summary}`
+  )
+  assert.ok(
+    summary.includes(
+      `[${r.outputs['target-sha'].slice(0, 7)}](${SERVER_URL}/rui/fork/commit/${r.outputs['target-sha']})`
+    ),
+    `target commit should be linked\n${summary}`
+  )
+  assert.ok(summary.includes('⚠️ status: conflicts'), `status line should carry an icon\n${summary}`)
+  console.log('ok 12 - summary links branches and commits; status line has an icon')
+}
+
+// --- 12b. summary on the up-to-date path -----------------------------------------
+{
+  git(forkWork, 'fetch', '-q', 'origin')
+  git(forkWork, 'checkout', '-q', 'main')
+  git(forkWork, 'reset', '-q', '--hard', 'origin/sync/upstream-main')
+  git(forkWork, 'push', '-q', '--force', 'origin', 'main')
+  const r = runAction({ 'INPUT_SKIP-PR': 'true' })
+  assert.equal(r.exitCode, 0, `scenario 12b should succeed\n${r.output}`)
+  assert.equal(r.outputs.status, 'up-to-date')
+  const summary = readFileSync(SUMMARY_FILE, 'utf8')
+  assert.ok(summary.includes('✅ status: up-to-date'), `up-to-date should carry the check icon\n${summary}`)
+  console.log('ok 12b - summary on the up-to-date path: "✅ status: up-to-date"')
+}
+
+// --- 12c. summary on the synced path ---------------------------------------------
+{
+  commitFile(seed, 'newer.txt', 'even more upstream work', 'u4: upstream commit after catch-up')
+  git(seed, 'push', '-q', 'origin', 'main')
+  const r = runAction({ 'INPUT_SKIP-PR': 'true' })
+  assert.equal(r.exitCode, 0, `scenario 12c should succeed\n${r.output}`)
+  assert.equal(r.outputs.status, 'synced')
+  const summary = readFileSync(SUMMARY_FILE, 'utf8')
+  assert.ok(summary.includes('🔄 status: synced'), `synced should carry the sync icon\n${summary}`)
+  console.log('ok 12c - summary on the synced path: "🔄 status: synced"')
+}
+
 rmSync(ROOT, { recursive: true, force: true })
 console.log('\nAll local scenarios passed.')
