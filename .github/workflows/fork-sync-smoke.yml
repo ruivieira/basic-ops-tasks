@@ -1,0 +1,67 @@
+name: fork-sync smoke test
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      # Fork PR branches belong to the head repository, not the base repository.
+      # Never change this to pull_request_target or supply a write token/secret.
+      - id: sync
+        uses: ./
+        with:
+          mode: fork
+          upstream-repo: ${{ github.event.pull_request.head.repo.full_name || github.repository }}
+          upstream-branch: ${{ github.head_ref || github.event.repository.default_branch }}
+          target-branch: main
+          dry-run: true
+      - name: Assert read-only result
+        env:
+          STATUS: ${{ steps.sync.outputs.status }}
+          HEAD_SHA: ${{ steps.sync.outputs.head-sha }}
+          PUSHED: ${{ steps.sync.outputs.pushed }}
+          PR_URL: ${{ steps.sync.outputs.pull-request-url }}
+        run: |
+          test -n "$STATUS"
+          test -n "$HEAD_SHA"
+          test "$PUSHED" = false
+          test -z "$PR_URL"
+
+  smoke-branch-sync:
+    if: github.event_name == 'pull_request' && github.event.pull_request.head.repo.full_name == github.repository
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@fbc6f3992d24b796d5a048ff273f7fcc4a7b6c09 # v5
+        with:
+          persist-credentials: false
+      - id: sync
+        uses: ./
+        with:
+          mode: branch
+          source-branch: ${{ github.head_ref }}
+          target-branch: main
+          dry-run: true
+      - name: Assert read-only result
+        env:
+          STATUS: ${{ steps.sync.outputs.status }}
+          HEAD_SHA: ${{ steps.sync.outputs.head-sha }}
+          PUSHED: ${{ steps.sync.outputs.pushed }}
+          PR_URL: ${{ steps.sync.outputs.pull-request-url }}
+        run: |
+          test -n "$STATUS"
+          test -n "$HEAD_SHA"
+          test "$PUSHED" = false
+          test -z "$PR_URL"
