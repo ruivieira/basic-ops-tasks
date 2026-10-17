@@ -3,8 +3,8 @@ import * as github from '@actions/github'
 import * as os from 'node:os'
 import * as path from 'node:path'
 import { mkdtemp } from 'node:fs/promises'
-import { syncRepository } from './git-ops'
-import type { SyncRepoResult } from './git-ops'
+import { syncRepository } from './git-ops.js'
+import type { SyncRepoResult } from './git-ops.js'
 
 type Octokit = ReturnType<typeof github.getOctokit>
 type PullRequest = { number: number; html_url: string }
