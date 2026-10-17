@@ -1,9 +1,9 @@
-name: 'Fork Sync'
+name: 'basic-ops-tasks'
 description: >-
   Keep a fork up to date with its upstream (parent) repository, or sync one
   branch into another within a repository, by opening a pull request that
   carries the incoming commits.
-author: 'rui'
+author: 'ruivieira'
 
 branding:
   icon: 'git-merge'
