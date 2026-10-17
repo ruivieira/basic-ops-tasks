@@ -32,9 +32,11 @@ import require$$1$5 from 'node:dns';
 import require$$5$3 from 'string_decoder';
 import 'child_process';
 import 'timers';
+import { createHash } from 'node:crypto';
 import * as os$1 from 'node:os';
+import { devNull } from 'node:os';
 import * as path from 'node:path';
-import { mkdir as mkdir$1, mkdtemp } from 'node:fs/promises';
+import { mkdir as mkdir$1, mkdtemp, rm as rm$1 } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 
 // We use any as a valid input type
@@ -34459,19 +34461,36 @@ const execFileAsync = promisify(execFile);
 function errorMessage$1(error) {
     return error instanceof Error ? error.message : String(error);
 }
-async function git(cwd, args) {
+class GitError extends Error {
+    exitCode;
+    constructor(message, exitCode) { super(message); this.exitCode = exitCode; }
+}
+async function git(cwd, args, auth) {
+    // Discard inherited Git overrides, helpers, hooks, templates and input secrets.
+    const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_') && !key.startsWith('INPUT_')));
+    const config = [
+        ['core.hooksPath', devNull], ['credential.helper', ''], ['http.followRedirects', 'false'],
+        ['submodule.recurse', 'false'], ['protocol.ext.allow', 'never'],
+    ];
+    if (auth?.token && auth.url.startsWith('https://')) {
+        config.push([`http.${auth.url}.extraheader`, `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${auth.token}`).toString('base64')}`]);
+    }
+    Object.assign(env, { GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull,
+        GIT_CONFIG_COUNT: String(config.length) });
+    config.forEach(([key, value], i) => { env[`GIT_CONFIG_KEY_${i}`] = key; env[`GIT_CONFIG_VALUE_${i}`] = value; });
     try {
         const { stdout } = await execFileAsync('git', args, {
             cwd,
-            maxBuffer: 64 * 1024 * 1024,
-            env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+            maxBuffer: 16 * 1024 * 1024,
+            timeout: 120_000,
+            env,
         });
         return stdout.toString();
     }
     catch (error) {
         const err = error;
         const stderr = typeof err.stderr === 'string' ? err.stderr : err.stderr?.toString() ?? '';
-        throw new Error(`git ${args.join(' ')} failed:\n${stderr.trim() || err.message}`);
+        throw new GitError(`git ${args.join(' ')} failed:\n${stderr.trim() || err.message}`, err.code);
     }
 }
 async function isAncestor(cwd, ancestor, descendant) {
@@ -34479,8 +34498,10 @@ async function isAncestor(cwd, ancestor, descendant) {
         await git(cwd, ['merge-base', '--is-ancestor', ancestor, descendant]);
         return true;
     }
-    catch {
-        return false;
+    catch (error) {
+        if (error instanceof GitError && error.exitCode === 1)
+            return false;
+        throw error;
     }
 }
 async function listCommits(cwd, from, to, limit = 30) {
@@ -34496,7 +34517,14 @@ async function listCommits(cwd, from, to, limit = 30) {
 async function syncRepository(opts) {
     const { workspace, originUrl, upstreamUrl, targetBranch, upstreamBranch, headBranch, mergeStrategy, mergeMessage, push, } = opts;
     await mkdir$1(workspace, { recursive: true });
-    await git(workspace, ['init', '--initial-branch=main']);
+    for (const branch of [targetBranch, upstreamBranch, headBranch]) {
+        if (branch.startsWith('-') || branch.includes('@{'))
+            throw new Error('Invalid branch name');
+        await git(workspace, ['check-ref-format', `refs/heads/${branch}`]);
+    }
+    if (!headBranch.startsWith('sync/'))
+        throw new Error('head-branch must be in the reserved sync/ namespace');
+    await git(workspace, ['init', '--template=', '--initial-branch=main']);
     await git(workspace, ['config', 'user.name', 'github-actions[bot]']);
     await git(workspace, ['config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com']);
     await git(workspace, ['config', 'commit.gpgsign', 'false']);
@@ -34508,7 +34536,7 @@ async function syncRepository(opts) {
             '--no-tags',
             'origin',
             `+refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}`,
-        ]);
+        ], { url: originUrl, token: opts.originToken });
     }
     catch (error) {
         throw new Error(`Could not fetch the target branch "${targetBranch}" from the fork. Does the branch exist? ` +
@@ -34520,7 +34548,7 @@ async function syncRepository(opts) {
             '--no-tags',
             'upstream',
             `+refs/heads/${upstreamBranch}:refs/remotes/upstream/${upstreamBranch}`,
-        ]);
+        ], { url: upstreamUrl, token: opts.upstreamToken });
     }
     catch (error) {
         throw new Error(`Could not fetch the upstream branch "${upstreamBranch}". Does it exist, and does the token have read ` +
@@ -34531,44 +34559,68 @@ async function syncRepository(opts) {
     if (await isAncestor(workspace, upstreamSha, targetSha)) {
         return { status: 'up-to-date', targetSha, upstreamSha, headSha: targetSha, commitCount: 0, commits: [], pushed: false };
     }
-    let status = 'synced';
-    if (mergeStrategy === 'tip') {
-        await git(workspace, ['checkout', '-B', headBranch, upstreamSha]);
+    const observed = push
+        ? (await git(workspace, ['ls-remote', '--heads', 'origin', `refs/heads/${headBranch}`], { url: originUrl, token: opts.originToken })).trim().split(/\s+/)[0]
+        : '';
+    if (observed && !opts.allowHeadUpdate) {
+        throw new Error('Existing head branch is not verified for this sync. Use a new head or explicitly set allow-head-update: true to adopt it.');
     }
-    else {
-        await git(workspace, ['checkout', '-B', headBranch, targetSha]);
-        try {
-            // Fast-forwards when possible, otherwise creates a merge commit with our message.
-            await git(workspace, ['merge', '--no-edit', '-m', mergeMessage, upstreamSha]);
-        }
-        catch {
-            // Conflicting (or impossible) merge: fall back to pointing the head branch at
-            // upstream's tip so the pull request surfaces the conflicts for manual resolution.
-            await git(workspace, ['merge', '--abort']).catch(() => undefined);
-            await git(workspace, ['checkout', '-B', headBranch, upstreamSha]);
-            status = 'conflicts';
-        }
+    let status = 'synced';
+    await git(workspace, ['checkout', '-B', headBranch, targetSha]);
+    try {
+        // Check mergeability even in tip mode; operational failures are not conflicts.
+        await git(workspace, ['merge', '--no-edit', '-m', mergeMessage, upstreamSha]);
+    }
+    catch (error) {
+        if (!(error instanceof GitError) || error.exitCode !== 1 ||
+            !(await git(workspace, ['ls-files', '--unmerged'])).trim())
+            throw error;
+        await git(workspace, ['merge', '--abort']);
+        await git(workspace, ['checkout', '-B', headBranch, upstreamSha]);
+        status = 'conflicts';
+    }
+    if (mergeStrategy === 'tip' && status !== 'conflicts') {
+        await git(workspace, ['checkout', '-B', headBranch, upstreamSha]);
     }
     const headSha = (await git(workspace, ['rev-parse', 'HEAD'])).trim();
     const commitCount = parseInt((await git(workspace, ['rev-list', '--count', `${targetSha}..${headSha}`])).trim(), 10);
     const commits = await listCommits(workspace, targetSha, headSha);
+    if (status === 'conflicts' && opts.failOnConflict) {
+        throw new Error('Merge conflicts; refusing to publish the sync branch.');
+    }
     let pushed = false;
     if (push) {
         // The head branch is owned by this action; force-push keeps re-runs idempotent.
-        await git(workspace, ['push', '--force', 'origin', `refs/heads/${headBranch}:refs/heads/${headBranch}`]);
+        await git(workspace, ['push', `--force-with-lease=refs/heads/${headBranch}:${observed}`, 'origin', `refs/heads/${headBranch}:refs/heads/${headBranch}`], { url: originUrl, token: opts.originToken });
         pushed = true;
     }
     return { status, targetSha, upstreamSha, headSha, commitCount, commits, pushed };
 }
 
 const REPOSITORY_PATTERN = /^[\w.-]+\/[\w.-]+$/;
-/** Token currently in use; used to scrub credentials from error messages. */
-let secret = '';
+/** Raw and encoded credentials to scrub from diagnostics. */
+const secrets = [];
+function maskToken(token) {
+    for (const value of [token, encodeURIComponent(token), Buffer.from(`x-access-token:${token}`).toString('base64')]) {
+        if (value) {
+            secrets.push(value);
+            setSecret(value);
+        }
+    }
+}
 function errorMessage(error) {
     return error instanceof Error ? error.message : String(error);
 }
 function redact(text) {
-    return secret ? text.split(secret).join('***') : text;
+    return [...secrets].sort((a, b) => b.length - a.length)
+        .reduce((result, secret) => result.split(secret).join('***'), text);
+}
+function html(text) {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function markdown(text) {
+    return html(text).replace(/([\\`*_{}\[\]()#+.!|~-])/g, '\\$1').replace(/@/g, '&#64;');
 }
 /** Icon shown next to the status in the job summary. */
 function statusIcon(status) {
@@ -34582,11 +34634,10 @@ function splitRepository(fullName) {
     const [owner, repo] = fullName.split('/');
     return { owner, repo };
 }
-function remoteUrl(server, fullName, token) {
+function remoteUrl(server, fullName) {
     const url = new URL(`${server.replace(/\/+$/, '')}/${fullName}.git`);
-    if (token && (url.protocol === 'https:' || url.protocol === 'http:')) {
-        url.username = 'x-access-token';
-        url.password = token;
+    if (url.username || url.password || !['https:', 'file:'].includes(url.protocol)) {
+        throw new Error('Git remotes require credential-free HTTPS URLs (file URLs are supported for offline tests).');
     }
     return url.toString();
 }
@@ -34622,16 +34673,18 @@ function buildPullRequestBody(result, server, upstreamRepo, upstreamBranch, targ
     const custom = getInput('pr-body').trim();
     if (custom)
         return custom;
+    upstreamBranch = markdown(upstreamBranch);
+    targetBranch = markdown(targetBranch);
     const conflictBanner = result.status === 'conflicts'
-        ? `> [!WARNING]\n> Merging \`${upstreamBranch}\` into \`${targetBranch}\` conflicts. ` +
+        ? `> [!WARNING]\n> Merging ${upstreamBranch} into ${targetBranch} conflicts. ` +
             `The head branch points at upstream's tip; resolve the conflicts in this pull request.\n\n`
         : '';
-    const commits = result.commits.map(commit => `- ${commit.sha.slice(0, 7)} ${commit.subject}`);
+    const commits = result.commits.map(commit => `- ${commit.sha.slice(0, 7)} ${markdown(commit.subject)}`);
     const overflow = result.commitCount > result.commits.length
         ? `\n- … and ${result.commitCount - result.commits.length} more`
         : '';
     return (`${conflictBanner}This pull request brings **${result.commitCount} commit(s)** from ` +
-        `[${upstreamRepo}](${server}/${upstreamRepo}) \`${upstreamBranch}\` into \`${targetBranch}\`.\n\n` +
+        `[${upstreamRepo}](${server}/${upstreamRepo}) ${upstreamBranch} into ${targetBranch}.\n\n` +
         `### Incoming commits\n${commits.join('\n')}${overflow}\n\n---\n` +
         `Automated by the [basic-ops-tasks](${server}/ruivieira/basic-ops-tasks)/fork-sync action.`);
 }
@@ -34641,12 +34694,12 @@ async function run() {
         throw new Error("The 'token' input is empty; pass a token with contents:write and pull-requests:write " +
             '(the default github.token usually works).');
     }
-    secret = token;
-    setSecret(token);
+    maskToken(token);
     const dryRun = getBooleanInput('dry-run');
     const skipPr = getBooleanInput('skip-pr');
     const failOnConflict = getBooleanInput('fail-on-conflict');
     const upstreamToken = getInput('upstream-token').trim() || token;
+    maskToken(upstreamToken);
     const { owner: forkOwner, repo: forkRepo } = context.repo;
     const upstreamRepoInput = getInput('upstream-repo').trim();
     const upstreamBranchInput = getInput('upstream-branch').trim();
@@ -34690,15 +34743,18 @@ async function run() {
     if (!upstreamBranch) {
         const { owner, repo } = splitRepository(upstreamRepo);
         info(`Looking up the default branch of ${upstreamRepo} …`);
-        const { data: upstream } = await octokit.rest.repos.get({ owner, repo });
+        const { data: upstream } = await getOctokit(upstreamToken).rest.repos.get({ owner, repo });
         upstreamBranch = upstream.default_branch;
     }
     const targetBranch = targetBranchInput || forkDefaultBranch;
     if (branchMode && sourceBranchInput === targetBranch) {
         throw new Error(`source-branch ("${sourceBranchInput}") must differ from target-branch ("${targetBranch}").`);
     }
-    const headBranch = getInput('head-branch').trim() ||
-        (branchMode ? `sync/${sourceBranchInput}-into-${targetBranch}` : `sync/upstream-${upstreamBranch}`);
+    const syncId = createHash('sha256').update(JSON.stringify([
+        branchMode ? 'branch' : 'fork', `${forkOwner}/${forkRepo}`, upstreamRepo, upstreamBranch, targetBranch,
+    ])).digest('hex');
+    const marker = `<!-- basic-ops-tasks:sync:${syncId} -->`;
+    const headBranch = getInput('head-branch').trim() || `sync/${syncId}`;
     if (headBranch === targetBranch) {
         throw new Error(`head-branch ("${headBranch}") must differ from target-branch ("${targetBranch}").`);
     }
@@ -34716,25 +34772,36 @@ async function run() {
         throw new Error(`merge-strategy must be "merge" or "tip", got "${mergeStrategy}".`);
     }
     const server = (process.env.GITHUB_SERVER_URL || 'https://github.com').replace(/\/+$/, '');
-    const originUrl = remoteUrl(server, `${forkOwner}/${forkRepo}`, token);
-    const upstreamUrl = remoteUrl(server, upstreamRepo, upstreamToken);
+    const originUrl = remoteUrl(server, `${forkOwner}/${forkRepo}`);
+    const upstreamUrl = remoteUrl(server, upstreamRepo);
+    let allowHeadUpdate = getInput('allow-head-update') ? getBooleanInput('allow-head-update') : false;
+    if (!dryRun && !skipPr && !allowHeadUpdate) {
+        const existing = await findOpenPullRequest(octokit, forkOwner, forkRepo, headBranch, targetBranch);
+        allowHeadUpdate = existing?.body?.includes(marker) ?? false;
+    }
     const workspace = await mkdtemp(path.join(process.env.RUNNER_TEMP || os$1.tmpdir(), 'fork-sync-'));
     info(`Syncing ${upstreamRepo}:${upstreamBranch} -> ${forkOwner}/${forkRepo}:${targetBranch} ` +
         `via ${headBranch} (strategy: ${mergeStrategy}, dry-run: ${dryRun})`);
-    const result = await syncRepository({
-        workspace,
-        originUrl,
-        upstreamUrl,
-        targetBranch,
-        upstreamBranch,
-        headBranch,
-        mergeStrategy,
-        mergeMessage: `Merge ${upstreamRepo}:${upstreamBranch} into ${targetBranch}`,
-        push: !dryRun,
-    });
-    if (result.status === 'conflicts' && failOnConflict) {
-        throw new Error(`Merging ${upstreamRepo}:${upstreamBranch} into ${targetBranch} conflicts. ` +
-            'Resolve it manually, or set fail-on-conflict: false to open a pull request that carries the conflicts.');
+    let result;
+    try {
+        result = await syncRepository({
+            workspace,
+            originUrl,
+            upstreamUrl,
+            targetBranch,
+            upstreamBranch,
+            headBranch,
+            mergeStrategy,
+            mergeMessage: `Merge ${upstreamRepo}:${upstreamBranch} into ${targetBranch}`,
+            push: !dryRun,
+            failOnConflict,
+            allowHeadUpdate,
+            originToken: token,
+            upstreamToken,
+        });
+    }
+    finally {
+        await rm$1(workspace, { recursive: true, force: true });
     }
     setOutput('status', result.status);
     setOutput('head-sha', result.headSha);
@@ -34754,7 +34821,7 @@ async function run() {
         info(`Pushed "${headBranch}" to ${forkOwner}/${forkRepo} (skip-pr: true, no pull request).`);
     }
     else {
-        const body = buildPullRequestBody(result, server, upstreamRepo, upstreamBranch, targetBranch);
+        const body = `${buildPullRequestBody(result, server, upstreamRepo, upstreamBranch, targetBranch)}\n\n${marker}`;
         pullRequest = await openOrUpdatePullRequest(octokit, forkOwner, forkRepo, headBranch, targetBranch, title, body);
         const labels = csvInput('labels');
         const assignees = csvInput('assignees');
@@ -34793,12 +34860,12 @@ async function run() {
         `${statusIcon(result.status)} status: ${result.status}`,
         // core.summary emits raw HTML, and markdown inside it does not render,
         // so links must be <a> anchors rather than [text](url).
-        `upstream: <a href="${server}/${upstreamRepo}/tree/${upstreamBranch}">${upstreamRepo}:${upstreamBranch}</a> @ ` +
-            `<a href="${server}/${upstreamRepo}/commit/${result.upstreamSha}">${result.upstreamSha.slice(0, 7)}</a>`,
-        `target: <a href="${server}/${forkOwner}/${forkRepo}/tree/${targetBranch}">${forkOwner}/${forkRepo}:${targetBranch}</a> @ ` +
-            `<a href="${server}/${forkOwner}/${forkRepo}/commit/${result.targetSha}">${result.targetSha.slice(0, 7)}</a>`,
+        `upstream: <a href="${html(server)}/${html(upstreamRepo)}/tree/${encodeURIComponent(upstreamBranch)}">${html(upstreamRepo)}:${html(upstreamBranch)}</a> @ ` +
+            `<a href="${html(server)}/${html(upstreamRepo)}/commit/${result.upstreamSha}">${result.upstreamSha.slice(0, 7)}</a>`,
+        `target: <a href="${html(server)}/${html(forkOwner)}/${html(forkRepo)}/tree/${encodeURIComponent(targetBranch)}">${html(forkOwner)}/${html(forkRepo)}:${html(targetBranch)}</a> @ ` +
+            `<a href="${html(server)}/${html(forkOwner)}/${html(forkRepo)}/commit/${result.targetSha}">${result.targetSha.slice(0, 7)}</a>`,
         `incoming commits: ${result.commitCount}`,
-        `pull request: ${pullRequest ? `<a href="${pullRequest.html_url}">#${pullRequest.number}</a>` : 'none'}`,
+        `pull request: ${pullRequest ? `<a href="${html(pullRequest.html_url)}">#${pullRequest.number}</a>` : 'none'}`,
     ])
         .write();
 }

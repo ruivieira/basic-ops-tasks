@@ -8,7 +8,7 @@
   "scripts": {
     "build": "rollup --config rollup.config.ts --configPlugin @rollup/plugin-typescript",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build --silent && node test/local-sync.test.mjs"
+    "test": "npm run build --silent && node test/local-sync.test.mjs && node --test test/security.test.mjs"
   },
   "dependencies": {
     "@actions/core": "^3.0.1",

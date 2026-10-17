@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { mkdir } from 'node:fs/promises'
+import { devNull } from 'node:os'
 
 const execFileAsync = promisify(execFile)
 
@@ -28,6 +29,10 @@ export interface SyncRepoOptions {
   mergeMessage: string
   /** Push the head branch to the fork when true. */
   push: boolean
+  failOnConflict?: boolean
+  originToken?: string
+  upstreamToken?: string
+  allowHeadUpdate?: boolean
 }
 
 export interface SyncRepoResult {
@@ -45,18 +50,36 @@ function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
-async function git(cwd: string, args: string[]): Promise<string> {
+class GitError extends Error {
+  readonly exitCode: unknown
+  constructor(message: string, exitCode: unknown) { super(message); this.exitCode = exitCode }
+}
+
+async function git(cwd: string, args: string[], auth?: { url: string; token?: string }): Promise<string> {
+  // Discard inherited Git overrides, helpers, hooks, templates and input secrets.
+  const env = Object.fromEntries(Object.entries(process.env).filter(([key]) => !key.startsWith('GIT_') && !key.startsWith('INPUT_')))
+  const config: [string, string][] = [
+    ['core.hooksPath', devNull], ['credential.helper', ''], ['http.followRedirects', 'false'],
+    ['submodule.recurse', 'false'], ['protocol.ext.allow', 'never'],
+  ]
+  if (auth?.token && auth.url.startsWith('https://')) {
+    config.push([`http.${auth.url}.extraheader`, `AUTHORIZATION: basic ${Buffer.from(`x-access-token:${auth.token}`).toString('base64')}`])
+  }
+  Object.assign(env, { GIT_TERMINAL_PROMPT: '0', GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: devNull,
+    GIT_CONFIG_COUNT: String(config.length) })
+  config.forEach(([key, value], i) => { env[`GIT_CONFIG_KEY_${i}`] = key; env[`GIT_CONFIG_VALUE_${i}`] = value })
   try {
     const { stdout } = await execFileAsync('git', args, {
       cwd,
-      maxBuffer: 64 * 1024 * 1024,
-      env: { ...process.env, GIT_TERMINAL_PROMPT: '0' },
+      maxBuffer: 16 * 1024 * 1024,
+      timeout: 120_000,
+      env,
     })
     return stdout.toString()
   } catch (error) {
-    const err = error as { stderr?: string | Buffer; message: string }
+    const err = error as { stderr?: string | Buffer; message: string; code?: unknown }
     const stderr = typeof err.stderr === 'string' ? err.stderr : err.stderr?.toString() ?? ''
-    throw new Error(`git ${args.join(' ')} failed:\n${stderr.trim() || err.message}`)
+    throw new GitError(`git ${args.join(' ')} failed:\n${stderr.trim() || err.message}`, err.code)
   }
 }
 
@@ -64,8 +87,9 @@ async function isAncestor(cwd: string, ancestor: string, descendant: string): Pr
   try {
     await git(cwd, ['merge-base', '--is-ancestor', ancestor, descendant])
     return true
-  } catch {
-    return false
+  } catch (error) {
+    if (error instanceof GitError && error.exitCode === 1) return false
+    throw error
   }
 }
 
@@ -93,7 +117,12 @@ export async function syncRepository(opts: SyncRepoOptions): Promise<SyncRepoRes
   } = opts
 
   await mkdir(workspace, { recursive: true })
-  await git(workspace, ['init', '--initial-branch=main'])
+  for (const branch of [targetBranch, upstreamBranch, headBranch]) {
+    if (branch.startsWith('-') || branch.includes('@{')) throw new Error('Invalid branch name')
+    await git(workspace, ['check-ref-format', `refs/heads/${branch}`])
+  }
+  if (!headBranch.startsWith('sync/')) throw new Error('head-branch must be in the reserved sync/ namespace')
+  await git(workspace, ['init', '--template=', '--initial-branch=main'])
   await git(workspace, ['config', 'user.name', 'github-actions[bot]'])
   await git(workspace, ['config', 'user.email', '41898282+github-actions[bot]@users.noreply.github.com'])
   await git(workspace, ['config', 'commit.gpgsign', 'false'])
@@ -106,7 +135,7 @@ export async function syncRepository(opts: SyncRepoOptions): Promise<SyncRepoRes
       '--no-tags',
       'origin',
       `+refs/heads/${targetBranch}:refs/remotes/origin/${targetBranch}`,
-    ])
+    ], { url: originUrl, token: opts.originToken })
   } catch (error) {
     throw new Error(
       `Could not fetch the target branch "${targetBranch}" from the fork. Does the branch exist? ` +
@@ -119,7 +148,7 @@ export async function syncRepository(opts: SyncRepoOptions): Promise<SyncRepoRes
       '--no-tags',
       'upstream',
       `+refs/heads/${upstreamBranch}:refs/remotes/upstream/${upstreamBranch}`,
-    ])
+    ], { url: upstreamUrl, token: opts.upstreamToken })
   } catch (error) {
     throw new Error(
       `Could not fetch the upstream branch "${upstreamBranch}". Does it exist, and does the token have read ` +
@@ -134,21 +163,27 @@ export async function syncRepository(opts: SyncRepoOptions): Promise<SyncRepoRes
     return { status: 'up-to-date', targetSha, upstreamSha, headSha: targetSha, commitCount: 0, commits: [], pushed: false }
   }
 
+  const observed = push
+    ? (await git(workspace, ['ls-remote', '--heads', 'origin', `refs/heads/${headBranch}`], { url: originUrl, token: opts.originToken })).trim().split(/\s+/)[0]
+    : ''
+  if (observed && !opts.allowHeadUpdate) {
+    throw new Error('Existing head branch is not verified for this sync. Use a new head or explicitly set allow-head-update: true to adopt it.')
+  }
+
   let status: 'synced' | 'conflicts' = 'synced'
-  if (mergeStrategy === 'tip') {
+  await git(workspace, ['checkout', '-B', headBranch, targetSha])
+  try {
+    // Check mergeability even in tip mode; operational failures are not conflicts.
+    await git(workspace, ['merge', '--no-edit', '-m', mergeMessage, upstreamSha])
+  } catch (error) {
+    if (!(error instanceof GitError) || error.exitCode !== 1 ||
+        !(await git(workspace, ['ls-files', '--unmerged'])).trim()) throw error
+    await git(workspace, ['merge', '--abort'])
     await git(workspace, ['checkout', '-B', headBranch, upstreamSha])
-  } else {
-    await git(workspace, ['checkout', '-B', headBranch, targetSha])
-    try {
-      // Fast-forwards when possible, otherwise creates a merge commit with our message.
-      await git(workspace, ['merge', '--no-edit', '-m', mergeMessage, upstreamSha])
-    } catch {
-      // Conflicting (or impossible) merge: fall back to pointing the head branch at
-      // upstream's tip so the pull request surfaces the conflicts for manual resolution.
-      await git(workspace, ['merge', '--abort']).catch(() => undefined)
-      await git(workspace, ['checkout', '-B', headBranch, upstreamSha])
-      status = 'conflicts'
-    }
+    status = 'conflicts'
+  }
+  if (mergeStrategy === 'tip' && status !== 'conflicts') {
+    await git(workspace, ['checkout', '-B', headBranch, upstreamSha])
   }
 
   const headSha = (await git(workspace, ['rev-parse', 'HEAD'])).trim()
@@ -158,10 +193,14 @@ export async function syncRepository(opts: SyncRepoOptions): Promise<SyncRepoRes
   )
   const commits = await listCommits(workspace, targetSha, headSha)
 
+  if (status === 'conflicts' && opts.failOnConflict) {
+    throw new Error('Merge conflicts; refusing to publish the sync branch.')
+  }
+
   let pushed = false
   if (push) {
     // The head branch is owned by this action; force-push keeps re-runs idempotent.
-    await git(workspace, ['push', '--force', 'origin', `refs/heads/${headBranch}:refs/heads/${headBranch}`])
+    await git(workspace, ['push', `--force-with-lease=refs/heads/${headBranch}:${observed}`, 'origin', `refs/heads/${headBranch}:refs/heads/${headBranch}`], { url: originUrl, token: opts.originToken })
     pushed = true
   }
 
