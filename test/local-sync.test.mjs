@@ -21,12 +21,16 @@ import assert from 'node:assert/strict'
 
 const ACTION_DIR = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '..')
 const ROOT = mkdtempSync(path.join(os.tmpdir(), 'fork-sync-test-'))
+process.once('exit', () => rmSync(ROOT, { recursive: true, force: true }))
 const SERVER = path.join(ROOT, 'server')
 const UPSTREAM = path.join(SERVER, 'acme', 'parent.git')
 const FORK = path.join(SERVER, 'rui', 'fork.git')
 const SERVER_URL = `file://${SERVER}`
 
 const GIT_ENV = {
+  HOME: ROOT,
+  GIT_CONFIG_GLOBAL: os.devNull,
+  GIT_CONFIG_NOSYSTEM: '1',
   GIT_AUTHOR_NAME: 'tester',
   GIT_AUTHOR_EMAIL: 'tester@example.com',
   GIT_COMMITTER_NAME: 'tester',
@@ -86,7 +90,8 @@ function runAction(overrides = {}) {
   writeFileSync(OUTPUT_FILE, '')
   writeFileSync(SUMMARY_FILE, '')
   const env = {
-    ...process.env,
+    PATH: process.env.PATH,
+    HOME: ROOT,
     GITHUB_REPOSITORY: 'rui/fork',
     GITHUB_SERVER_URL: SERVER_URL,
     GITHUB_OUTPUT: OUTPUT_FILE,
@@ -96,6 +101,8 @@ function runAction(overrides = {}) {
     'INPUT_UPSTREAM-REPO': 'acme/parent',
     'INPUT_UPSTREAM-BRANCH': 'main',
     'INPUT_TARGET-BRANCH': 'main',
+    'INPUT_HEAD-BRANCH': overrides['INPUT_SOURCE-BRANCH'] ? `sync/${overrides['INPUT_SOURCE-BRANCH']}-into-${overrides['INPUT_TARGET-BRANCH'] || 'main'}` : 'sync/upstream-main',
+    'INPUT_ALLOW-HEAD-UPDATE': 'true', // Offline repeated skip-pr fixtures explicitly adopt their dedicated branch.
     'INPUT_MERGE-STRATEGY': 'merge',
     'INPUT_DRY-RUN': 'false',
     'INPUT_SKIP-PR': 'false',
@@ -157,6 +164,14 @@ function parseOutputFile(file) {
   console.log('ok  1 - diverged fork: merge strategy creates and pushes a merge commit')
 }
 
+// Existing branches require explicit adoption unless verified against a matching PR.
+{
+  const before = git(FORK, 'rev-parse', 'refs/heads/sync/upstream-main')
+  const r = runAction({ 'INPUT_SKIP-PR': 'true', 'INPUT_ALLOW-HEAD-UPDATE': 'false' })
+  assert.equal(r.exitCode, 1, 'unverified existing head must not be overwritten')
+  assert.equal(git(FORK, 'rev-parse', 'refs/heads/sync/upstream-main'), before)
+}
+
 // --- 2. fork already contains upstream -> up-to-date --------------------------
 {
   git(forkWork, 'fetch', '-q', 'origin')
@@ -185,8 +200,9 @@ function parseOutputFile(file) {
 
 // --- 3b. fail-on-conflict: true ------------------------------------------------
 {
-  const r = runAction({ 'INPUT_SKIP-PR': 'true', 'INPUT_FAIL-ON-CONFLICT': 'true' })
+  const r = runAction({ 'INPUT_SKIP-PR': 'true', 'INPUT_FAIL-ON-CONFLICT': 'true', 'INPUT_HEAD-BRANCH': 'sync/rejected-conflict' })
   assert.equal(r.exitCode, 1, 'scenario 3b should fail')
+  assert.throws(() => git(FORK, 'rev-parse', '--verify', 'refs/heads/sync/rejected-conflict'), 'rejected conflict must not publish a branch')
   assert.ok(r.output.toLowerCase().includes('conflict'), 'failure should mention the conflict')
   console.log('ok  3b - fail-on-conflict: true fails the run')
 }
@@ -195,7 +211,7 @@ function parseOutputFile(file) {
 {
   const r = runAction({ 'INPUT_SKIP-PR': 'true', 'INPUT_MERGE-STRATEGY': 'tip' })
   assert.equal(r.exitCode, 0, `scenario 4 should succeed\n${r.output}`)
-  assert.equal(r.outputs.status, 'synced')
+  assert.equal(r.outputs.status, 'conflicts', 'tip must report known merge conflicts')
   assert.equal(r.outputs['head-sha'], git(UPSTREAM, 'rev-parse', 'refs/heads/main'))
   console.log('ok  4 - merge-strategy: tip points head at upstream tip')
 }
@@ -214,9 +230,9 @@ function parseOutputFile(file) {
 
 // --- 6. custom head branch ------------------------------------------------------
 {
-  const r = runAction({ 'INPUT_SKIP-PR': 'true', 'INPUT_HEAD-BRANCH': 'custom/sync-branch' })
+  const r = runAction({ 'INPUT_SKIP-PR': 'true', 'INPUT_HEAD-BRANCH': 'sync/custom-branch' })
   assert.equal(r.exitCode, 0, `scenario 6 should succeed\n${r.output}`)
-  assert.equal(r.outputs['head-sha'], git(FORK, 'rev-parse', 'refs/heads/custom/sync-branch'))
+  assert.equal(r.outputs['head-sha'], git(FORK, 'rev-parse', 'refs/heads/sync/custom-branch'))
   console.log('ok  6 - custom head-branch is pushed')
 }
 
@@ -248,9 +264,9 @@ function parseOutputFile(file) {
   assert.equal(
     r.outputs['head-sha'],
     git(FORK, 'rev-parse', 'refs/heads/sync/develop-into-main'),
-    'default head branch should be sync/<source>-into-<target>'
+    'explicit legacy head should remain usable with adoption enabled'
   )
-  console.log('ok  7 - branch-to-branch sync: source-branch fast-forwards into sync/<source>-into-<target>')
+  console.log('ok  7 - branch-to-branch sync: source fast-forwards into configured sync head')
 }
 
 // --- 7b. branch sync: target already contains source -> up-to-date ---------------
@@ -518,6 +534,17 @@ function parseOutputFile(file) {
   const summary = readFileSync(SUMMARY_FILE, 'utf8')
   assert.ok(summary.includes('<h2>Sync branch</h2>'), `branch-mode heading\n${summary}`)
   console.log('ok 12d - summary heading reflects the mode')
+}
+
+{
+  const branch = 'audit"><h1>FORGED</h1>'
+  git(seed, 'branch', branch)
+  git(seed, 'push', '-q', 'origin', branch)
+  const r = runAction({ 'INPUT_UPSTREAM-BRANCH': branch, 'INPUT_DRY-RUN': 'true' })
+  assert.equal(r.exitCode, 0, r.output)
+  const summary = readFileSync(SUMMARY_FILE, 'utf8')
+  assert.ok(!summary.includes('<h1>FORGED</h1>'), 'branch markup must be escaped')
+  assert.ok(summary.includes('&lt;h1&gt;FORGED&lt;/h1&gt;'))
 }
 
 rmSync(ROOT, { recursive: true, force: true })

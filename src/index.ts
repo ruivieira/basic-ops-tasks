@@ -1,25 +1,42 @@
 import * as core from '@actions/core'
 import * as github from '@actions/github'
+import { createHash } from 'node:crypto'
 import * as os from 'node:os'
 import * as path from 'node:path'
-import { mkdtemp } from 'node:fs/promises'
+import { mkdtemp, rm } from 'node:fs/promises'
 import { syncRepository } from './git-ops.js'
 import type { SyncRepoResult } from './git-ops.js'
 
 type Octokit = ReturnType<typeof github.getOctokit>
-type PullRequest = { number: number; html_url: string }
+type PullRequest = { number: number; html_url: string; body?: string | null }
 
 const REPOSITORY_PATTERN = /^[\w.-]+\/[\w.-]+$/
 
-/** Token currently in use; used to scrub credentials from error messages. */
-let secret = ''
+/** Raw and encoded credentials to scrub from diagnostics. */
+const secrets: string[] = []
+
+function maskToken(token: string): void {
+  for (const value of [token, encodeURIComponent(token), Buffer.from(`x-access-token:${token}`).toString('base64')]) {
+    if (value) { secrets.push(value); core.setSecret(value) }
+  }
+}
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error)
 }
 
 function redact(text: string): string {
-  return secret ? text.split(secret).join('***') : text
+  return [...secrets].sort((a, b) => b.length - a.length)
+    .reduce((result, secret) => result.split(secret).join('***'), text)
+}
+
+function html(text: string): string {
+  return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+    .replace(/"/g, '&quot;').replace(/'/g, '&#39;')
+}
+
+function markdown(text: string): string {
+  return html(text).replace(/([\\`*_{}\[\]()#+.!|~-])/g, '\\$1').replace(/@/g, '&#64;')
 }
 
 /** Icon shown next to the status in the job summary. */
@@ -34,11 +51,10 @@ function splitRepository(fullName: string): { owner: string; repo: string } {
   return { owner, repo }
 }
 
-function remoteUrl(server: string, fullName: string, token: string): string {
+function remoteUrl(server: string, fullName: string): string {
   const url = new URL(`${server.replace(/\/+$/, '')}/${fullName}.git`)
-  if (token && (url.protocol === 'https:' || url.protocol === 'http:')) {
-    url.username = 'x-access-token'
-    url.password = token
+  if (url.username || url.password || !['https:', 'file:'].includes(url.protocol)) {
+    throw new Error('Git remotes require credential-free HTTPS URLs (file URLs are supported for offline tests).')
   }
   return url.toString()
 }
@@ -99,19 +115,21 @@ function buildPullRequestBody(
   const custom = core.getInput('pr-body').trim()
   if (custom) return custom
 
+  upstreamBranch = markdown(upstreamBranch)
+  targetBranch = markdown(targetBranch)
   const conflictBanner =
     result.status === 'conflicts'
-      ? `> [!WARNING]\n> Merging \`${upstreamBranch}\` into \`${targetBranch}\` conflicts. ` +
+      ? `> [!WARNING]\n> Merging ${upstreamBranch} into ${targetBranch} conflicts. ` +
         `The head branch points at upstream's tip; resolve the conflicts in this pull request.\n\n`
       : ''
-  const commits = result.commits.map(commit => `- ${commit.sha.slice(0, 7)} ${commit.subject}`)
+  const commits = result.commits.map(commit => `- ${commit.sha.slice(0, 7)} ${markdown(commit.subject)}`)
   const overflow =
     result.commitCount > result.commits.length
       ? `\n- … and ${result.commitCount - result.commits.length} more`
       : ''
   return (
     `${conflictBanner}This pull request brings **${result.commitCount} commit(s)** from ` +
-    `[${upstreamRepo}](${server}/${upstreamRepo}) \`${upstreamBranch}\` into \`${targetBranch}\`.\n\n` +
+    `[${upstreamRepo}](${server}/${upstreamRepo}) ${upstreamBranch} into ${targetBranch}.\n\n` +
     `### Incoming commits\n${commits.join('\n')}${overflow}\n\n---\n` +
       `Automated by the [basic-ops-tasks](${server}/ruivieira/basic-ops-tasks)/fork-sync action.`
   )
@@ -125,13 +143,13 @@ async function run(): Promise<void> {
         '(the default github.token usually works).'
     )
   }
-  secret = token
-  core.setSecret(token)
+  maskToken(token)
 
   const dryRun = core.getBooleanInput('dry-run')
   const skipPr = core.getBooleanInput('skip-pr')
   const failOnConflict = core.getBooleanInput('fail-on-conflict')
   const upstreamToken = core.getInput('upstream-token').trim() || token
+  maskToken(upstreamToken)
 
   const { owner: forkOwner, repo: forkRepo } = github.context.repo
   const upstreamRepoInput = core.getInput('upstream-repo').trim()
@@ -188,7 +206,7 @@ async function run(): Promise<void> {
   if (!upstreamBranch) {
     const { owner, repo } = splitRepository(upstreamRepo)
     core.info(`Looking up the default branch of ${upstreamRepo} …`)
-    const { data: upstream } = await octokit.rest.repos.get({ owner, repo })
+    const { data: upstream } = await github.getOctokit(upstreamToken).rest.repos.get({ owner, repo })
     upstreamBranch = upstream.default_branch
   }
 
@@ -196,9 +214,12 @@ async function run(): Promise<void> {
   if (branchMode && sourceBranchInput === targetBranch) {
     throw new Error(`source-branch ("${sourceBranchInput}") must differ from target-branch ("${targetBranch}").`)
   }
+  const syncId = createHash('sha256').update(JSON.stringify([
+    branchMode ? 'branch' : 'fork', `${forkOwner}/${forkRepo}`, upstreamRepo, upstreamBranch, targetBranch,
+  ])).digest('hex')
+  const marker = `<!-- basic-ops-tasks:sync:${syncId} -->`
   const headBranch =
-    core.getInput('head-branch').trim() ||
-    (branchMode ? `sync/${sourceBranchInput}-into-${targetBranch}` : `sync/upstream-${upstreamBranch}`)
+    core.getInput('head-branch').trim() || `sync/${syncId}`
   if (headBranch === targetBranch) {
     throw new Error(`head-branch ("${headBranch}") must differ from target-branch ("${targetBranch}").`)
   }
@@ -222,8 +243,14 @@ async function run(): Promise<void> {
   }
 
   const server = (process.env.GITHUB_SERVER_URL || 'https://github.com').replace(/\/+$/, '')
-  const originUrl = remoteUrl(server, `${forkOwner}/${forkRepo}`, token)
-  const upstreamUrl = remoteUrl(server, upstreamRepo, upstreamToken)
+  const originUrl = remoteUrl(server, `${forkOwner}/${forkRepo}`)
+  const upstreamUrl = remoteUrl(server, upstreamRepo)
+
+  let allowHeadUpdate = core.getInput('allow-head-update') ? core.getBooleanInput('allow-head-update') : false
+  if (!dryRun && !skipPr && !allowHeadUpdate) {
+    const existing = await findOpenPullRequest(octokit, forkOwner, forkRepo, headBranch, targetBranch)
+    allowHeadUpdate = existing?.body?.includes(marker) ?? false
+  }
 
   const workspace = await mkdtemp(path.join(process.env.RUNNER_TEMP || os.tmpdir(), 'fork-sync-'))
   core.info(
@@ -231,23 +258,25 @@ async function run(): Promise<void> {
       `via ${headBranch} (strategy: ${mergeStrategy}, dry-run: ${dryRun})`
   )
 
-  const result = await syncRepository({
-    workspace,
-    originUrl,
-    upstreamUrl,
-    targetBranch,
-    upstreamBranch,
-    headBranch,
-    mergeStrategy,
-    mergeMessage: `Merge ${upstreamRepo}:${upstreamBranch} into ${targetBranch}`,
-    push: !dryRun,
-  })
-
-  if (result.status === 'conflicts' && failOnConflict) {
-    throw new Error(
-      `Merging ${upstreamRepo}:${upstreamBranch} into ${targetBranch} conflicts. ` +
-        'Resolve it manually, or set fail-on-conflict: false to open a pull request that carries the conflicts.'
-    )
+  let result: SyncRepoResult
+  try {
+    result = await syncRepository({
+      workspace,
+      originUrl,
+      upstreamUrl,
+      targetBranch,
+      upstreamBranch,
+      headBranch,
+      mergeStrategy,
+      mergeMessage: `Merge ${upstreamRepo}:${upstreamBranch} into ${targetBranch}`,
+      push: !dryRun,
+      failOnConflict,
+      allowHeadUpdate,
+      originToken: token,
+      upstreamToken,
+    })
+  } finally {
+    await rm(workspace, { recursive: true, force: true })
   }
 
   core.setOutput('status', result.status)
@@ -267,7 +296,7 @@ async function run(): Promise<void> {
   } else if (skipPr) {
     core.info(`Pushed "${headBranch}" to ${forkOwner}/${forkRepo} (skip-pr: true, no pull request).`)
   } else {
-    const body = buildPullRequestBody(result, server, upstreamRepo, upstreamBranch, targetBranch)
+    const body = `${buildPullRequestBody(result, server, upstreamRepo, upstreamBranch, targetBranch)}\n\n${marker}`
     pullRequest = await openOrUpdatePullRequest(octokit, forkOwner, forkRepo, headBranch, targetBranch, title, body)
 
     const labels = csvInput('labels')
@@ -307,12 +336,12 @@ async function run(): Promise<void> {
       `${statusIcon(result.status)} status: ${result.status}`,
       // core.summary emits raw HTML, and markdown inside it does not render,
       // so links must be <a> anchors rather than [text](url).
-      `upstream: <a href="${server}/${upstreamRepo}/tree/${upstreamBranch}">${upstreamRepo}:${upstreamBranch}</a> @ ` +
-        `<a href="${server}/${upstreamRepo}/commit/${result.upstreamSha}">${result.upstreamSha.slice(0, 7)}</a>`,
-      `target: <a href="${server}/${forkOwner}/${forkRepo}/tree/${targetBranch}">${forkOwner}/${forkRepo}:${targetBranch}</a> @ ` +
-        `<a href="${server}/${forkOwner}/${forkRepo}/commit/${result.targetSha}">${result.targetSha.slice(0, 7)}</a>`,
+      `upstream: <a href="${html(server)}/${html(upstreamRepo)}/tree/${encodeURIComponent(upstreamBranch)}">${html(upstreamRepo)}:${html(upstreamBranch)}</a> @ ` +
+        `<a href="${html(server)}/${html(upstreamRepo)}/commit/${result.upstreamSha}">${result.upstreamSha.slice(0, 7)}</a>`,
+      `target: <a href="${html(server)}/${html(forkOwner)}/${html(forkRepo)}/tree/${encodeURIComponent(targetBranch)}">${html(forkOwner)}/${html(forkRepo)}:${html(targetBranch)}</a> @ ` +
+        `<a href="${html(server)}/${html(forkOwner)}/${html(forkRepo)}/commit/${result.targetSha}">${result.targetSha.slice(0, 7)}</a>`,
       `incoming commits: ${result.commitCount}`,
-      `pull request: ${pullRequest ? `<a href="${pullRequest.html_url}">#${pullRequest.number}</a>` : 'none'}`,
+      `pull request: ${pullRequest ? `<a href="${html(pullRequest.html_url)}">#${pullRequest.number}</a>` : 'none'}`,
     ])
     .write()
 }

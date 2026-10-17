@@ -52,21 +52,29 @@ inputs:
   head-branch:
     description: >-
       Branch on the fork that carries the changes (the pull request head).
-      Default: "sync/upstream-<upstream-branch>", or
-      "sync/<source-branch>-into-<target-branch>" in branch-to-branch mode.
+      Must be in the reserved sync/ namespace. Default: "sync/<identity-sha256>",
+      derived from mode, destination repository, upstream repository, source
+      branch and target branch. Existing heads require matching PR identity
+      or explicit allow-head-update.
     required: false
     default: ''
+  allow-head-update:
+    description: >-
+      Explicitly adopt/update an existing sync/ head without a matching open PR
+      carrying this sync identity. Required for repeated skip-pr runs. Updates
+      still use force-with-lease. Only enable for a branch dedicated to this sync.
+    required: false
+    default: 'false'
   merge-strategy:
     description: >-
       "merge" (default): merge upstream into the target branch, fast-forwarding
-      when possible. "tip": point the head branch at upstream's tip and let the
-      pull request surface any divergence as conflicts.
+      when possible. "tip": check mergeability, then point the head branch at upstream's tip.
+      Both strategies report conflicts; unexpected Git errors fail closed.
     required: false
     default: 'merge'
   fail-on-conflict:
     description: >-
-      Fail the action instead of opening a conflicted pull request when the
-      merge conflicts.
+      Fail before pushing or modifying a pull request when the merge conflicts.
     required: false
     default: 'false'
   upstream-token:
