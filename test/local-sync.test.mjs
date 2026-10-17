@@ -400,5 +400,53 @@ function parseOutputFile(file) {
   console.log('ok 10d - mode: branch runs the branch sync explicitly')
 }
 
+// --- 11. branch mode: conventional-commit default PR title -----------------------
+{
+  const r = runAction({
+    'INPUT_MODE': 'branch',
+    'INPUT_SOURCE-BRANCH': 'develop',
+    'INPUT_UPSTREAM-REPO': '',
+    'INPUT_UPSTREAM-BRANCH': '',
+    'INPUT_TARGET-BRANCH': 'main',
+    'INPUT_SKIP-PR': 'true',
+  })
+  assert.equal(r.exitCode, 0, `scenario 11 should succeed\n${r.output}`)
+  assert.ok(
+    r.output.includes('sync(branch): Sync develop into main'),
+    `branch-mode default title should be conventional and omit the repo\n${r.output}`
+  )
+  console.log('ok 11 - branch mode default PR title: "sync(branch): Sync develop into main"')
+}
+
+// --- 11b. fork mode: conventional-commit default PR title ------------------------
+{
+  const r = runAction({ 'INPUT_SKIP-PR': 'true' })
+  assert.equal(r.exitCode, 0, `scenario 11b should succeed\n${r.output}`)
+  assert.ok(
+    r.output.includes('sync(pull): Sync acme/parent:main (upstream) into main'),
+    `fork-mode default title should be conventional and mark the upstream\n${r.output}`
+  )
+  console.log('ok 11b - fork mode default PR title: "sync(pull): Sync acme/parent:main (upstream) into main"')
+}
+
+// --- 11c. custom pr-title overrides the default ----------------------------------
+{
+  const r = runAction({
+    'INPUT_MODE': 'branch',
+    'INPUT_SOURCE-BRANCH': 'develop',
+    'INPUT_UPSTREAM-REPO': '',
+    'INPUT_UPSTREAM-BRANCH': '',
+    'INPUT_TARGET-BRANCH': 'main',
+    'INPUT_PR-TITLE': 'chore: my custom sync title',
+    'INPUT_SKIP-PR': 'true',
+  })
+  assert.equal(r.exitCode, 0, `scenario 11c should succeed\n${r.output}`)
+  assert.ok(
+    r.output.includes('Pull request title: "chore: my custom sync title"'),
+    `custom pr-title must win over the default\n${r.output}`
+  )
+  console.log('ok 11c - custom pr-title overrides the default')
+}
+
 rmSync(ROOT, { recursive: true, force: true })
 console.log('\nAll local scenarios passed.')

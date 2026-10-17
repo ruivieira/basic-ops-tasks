@@ -202,6 +202,13 @@ async function run(): Promise<void> {
     )
   }
 
+  const title =
+    core.getInput('pr-title').trim() ||
+    (branchMode
+      ? `sync(branch): Sync ${sourceBranchInput} into ${targetBranch}`
+      : `sync(pull): Sync ${upstreamRepo}:${upstreamBranch} (upstream) into ${targetBranch}`)
+  core.info(`Pull request title: "${title}"`)
+
   const mergeStrategy = core.getInput('merge-strategy').trim()
   if (mergeStrategy !== 'merge' && mergeStrategy !== 'tip') {
     throw new Error(`merge-strategy must be "merge" or "tip", got "${mergeStrategy}".`)
@@ -253,8 +260,6 @@ async function run(): Promise<void> {
   } else if (skipPr) {
     core.info(`Pushed "${headBranch}" to ${forkOwner}/${forkRepo} (skip-pr: true, no pull request).`)
   } else {
-    const title =
-      core.getInput('pr-title').trim() || `Sync ${upstreamRepo}:${upstreamBranch} into ${targetBranch}`
     const body = buildPullRequestBody(result, server, upstreamRepo, upstreamBranch, targetBranch)
     pullRequest = await openOrUpdatePullRequest(octokit, forkOwner, forkRepo, headBranch, targetBranch, title, body)
 

@@ -77,7 +77,10 @@ inputs:
     required: false
     default: ''
   pr-title:
-    description: 'Title for the pull request. Default: "Sync <upstream>:<branch> into <target>".'
+    description: >-
+      Title for the pull request. Default: "sync(pull): Sync <upstream>:<branch>
+      (upstream) into <target>" in fork mode, "sync(branch): Sync <source> into
+      <target>" in branch mode.
     required: false
     default: ''
   pr-body:
