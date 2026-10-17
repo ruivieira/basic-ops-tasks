@@ -6,7 +6,7 @@ description: >-
 author: 'rui'
 
 branding:
-  icon: 'git-pull-request'
+  icon: 'git-merge'
   color: 'purple'
 
 inputs:
