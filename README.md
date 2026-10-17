@@ -1,13 +1,18 @@
-# fork-sync-action
+# basic-ops-tasks
 
-A GitHub Action that keeps a **fork** (repo B) up to date with its **upstream / parent**
-repository (repo A) by opening a **pull request** that carries the incoming commits,
-so nothing lands on your fork's branches without review. It also syncs **one branch
-into another** of the same repository (e.g. `develop` into `main`) the same way:
-as a reviewable pull request.
+[![fork-sync smoke test](https://github.com/ruivieira/basic-ops-tasks/actions/workflows/fork-sync-smoke.yml/badge.svg)](https://github.com/ruivieira/basic-ops-tasks/actions/workflows/fork-sync-smoke.yml)
+[![CodeQL](https://github.com/ruivieira/basic-ops-tasks/actions/workflows/dynamic/github-code-scanning/codeql/badge.svg)](https://github.com/ruivieira/basic-ops-tasks/actions/workflows/dynamic/github-code-scanning/codeql)
+[![Trivy](https://github.com/ruivieira/basic-ops-tasks/actions/workflows/trivy.yml/badge.svg)](https://github.com/ruivieira/basic-ops-tasks/actions/workflows/trivy.yml)
+[![version](https://img.shields.io/github/v/tag/ruivieira/basic-ops-tasks.svg)](https://github.com/ruivieira/basic-ops-tasks/tags)
 
-The action is served from the root of this repository (`basic-ops-tasks`), so the
-`uses:` reference carries no subdirectory path:
+GitHub Actions for routine repository maintenance, served from the root of this
+repository. Currently one action: it keeps a **fork** (repo B) up to date with its
+**upstream / parent** repository (repo A) by opening a **pull request** that carries
+the incoming commits, so nothing lands on your fork's branches without review. It
+also syncs **one branch into another** of the same repository (e.g. `develop` into
+`main`) the same way: as a reviewable pull request.
+
+The `uses:` reference carries no subdirectory path:
 
 ```yaml
 - uses: ruivieira/basic-ops-tasks@v1
@@ -473,6 +478,11 @@ automatically on pushes/PRs that touch the action.
 
 If the action ever moves to its own repository, move the workflow along with it
 and update the reference.
+
+`.github/workflows/trivy.yml` does not test the action's behavior; it scans the
+repository itself (dependency lockfiles, misconfigurations, secrets) with Trivy
+on every pull request and push to `main`, and uploads the SARIF results to code
+scanning alongside CodeQL.
 
 ### 4. Full end-to-end with throwaway repos
 

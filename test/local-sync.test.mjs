@@ -453,28 +453,29 @@ function parseOutputFile(file) {
   const r = runAction({ 'INPUT_SKIP-PR': 'true' })
   assert.equal(r.exitCode, 0, `scenario 12 should succeed\n${r.output}`)
   const summary = readFileSync(SUMMARY_FILE, 'utf8')
+  assert.ok(summary.includes('<h2>Sync upstream</h2>'), `fork-mode heading\n${summary}`)
   assert.ok(
-    summary.includes(`[acme/parent:main](${SERVER_URL}/acme/parent/tree/main)`),
-    `upstream branch should be linked\n${summary}`
+    summary.includes(`<a href="${SERVER_URL}/acme/parent/tree/main">acme/parent:main</a>`),
+    `upstream branch should be an HTML anchor (markdown is inert inside summary HTML)\n${summary}`
   )
   assert.ok(
     summary.includes(
-      `[${r.outputs['upstream-sha'].slice(0, 7)}](${SERVER_URL}/acme/parent/commit/${r.outputs['upstream-sha']})`
+      `<a href="${SERVER_URL}/acme/parent/commit/${r.outputs['upstream-sha']}">${r.outputs['upstream-sha'].slice(0, 7)}</a>`
     ),
-    `upstream commit should be linked\n${summary}`
+    `upstream commit should be an HTML anchor\n${summary}`
   )
   assert.ok(
-    summary.includes(`[rui/fork:main](${SERVER_URL}/rui/fork/tree/main)`),
-    `target branch should be linked\n${summary}`
+    summary.includes(`<a href="${SERVER_URL}/rui/fork/tree/main">rui/fork:main</a>`),
+    `target branch should be an HTML anchor\n${summary}`
   )
   assert.ok(
     summary.includes(
-      `[${r.outputs['target-sha'].slice(0, 7)}](${SERVER_URL}/rui/fork/commit/${r.outputs['target-sha']})`
+      `<a href="${SERVER_URL}/rui/fork/commit/${r.outputs['target-sha']}">${r.outputs['target-sha'].slice(0, 7)}</a>`
     ),
-    `target commit should be linked\n${summary}`
+    `target commit should be an HTML anchor\n${summary}`
   )
   assert.ok(summary.includes('⚠️ status: conflicts'), `status line should carry an icon\n${summary}`)
-  console.log('ok 12 - summary links branches and commits; status line has an icon')
+  console.log('ok 12 - summary links branches and commits via HTML anchors; status line has an icon')
 }
 
 // --- 12b. summary on the up-to-date path -----------------------------------------
@@ -501,6 +502,22 @@ function parseOutputFile(file) {
   const summary = readFileSync(SUMMARY_FILE, 'utf8')
   assert.ok(summary.includes('🔄 status: synced'), `synced should carry the sync icon\n${summary}`)
   console.log('ok 12c - summary on the synced path: "🔄 status: synced"')
+}
+
+// --- 12d. summary heading reflects the mode --------------------------------------
+{
+  const r = runAction({
+    'INPUT_MODE': 'branch',
+    'INPUT_SOURCE-BRANCH': 'develop',
+    'INPUT_UPSTREAM-REPO': '',
+    'INPUT_UPSTREAM-BRANCH': '',
+    'INPUT_TARGET-BRANCH': 'main',
+    'INPUT_SKIP-PR': 'true',
+  })
+  assert.equal(r.exitCode, 0, `scenario 12d should succeed\n${r.output}`)
+  const summary = readFileSync(SUMMARY_FILE, 'utf8')
+  assert.ok(summary.includes('<h2>Sync branch</h2>'), `branch-mode heading\n${summary}`)
+  console.log('ok 12d - summary heading reflects the mode')
 }
 
 rmSync(ROOT, { recursive: true, force: true })

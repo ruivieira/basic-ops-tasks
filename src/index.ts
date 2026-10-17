@@ -302,15 +302,17 @@ async function run(): Promise<void> {
   core.setOutput('pull-request-url', pullRequest ? pullRequest.html_url : '')
 
   await core.summary
-    .addHeading('Fork sync', 2)
+    .addHeading(branchMode ? 'Sync branch' : 'Sync upstream', 2)
     .addList([
       `${statusIcon(result.status)} status: ${result.status}`,
-      `upstream: [${upstreamRepo}:${upstreamBranch}](${server}/${upstreamRepo}/tree/${upstreamBranch}) @ ` +
-        `[${result.upstreamSha.slice(0, 7)}](${server}/${upstreamRepo}/commit/${result.upstreamSha})`,
-      `target: [${forkOwner}/${forkRepo}:${targetBranch}](${server}/${forkOwner}/${forkRepo}/tree/${targetBranch}) @ ` +
-        `[${result.targetSha.slice(0, 7)}](${server}/${forkOwner}/${forkRepo}/commit/${result.targetSha})`,
+      // core.summary emits raw HTML, and markdown inside it does not render,
+      // so links must be <a> anchors rather than [text](url).
+      `upstream: <a href="${server}/${upstreamRepo}/tree/${upstreamBranch}">${upstreamRepo}:${upstreamBranch}</a> @ ` +
+        `<a href="${server}/${upstreamRepo}/commit/${result.upstreamSha}">${result.upstreamSha.slice(0, 7)}</a>`,
+      `target: <a href="${server}/${forkOwner}/${forkRepo}/tree/${targetBranch}">${forkOwner}/${forkRepo}:${targetBranch}</a> @ ` +
+        `<a href="${server}/${forkOwner}/${forkRepo}/commit/${result.targetSha}">${result.targetSha.slice(0, 7)}</a>`,
       `incoming commits: ${result.commitCount}`,
-      `pull request: ${pullRequest ? pullRequest.html_url : 'none'}`,
+      `pull request: ${pullRequest ? `<a href="${pullRequest.html_url}">#${pullRequest.number}</a>` : 'none'}`,
     ])
     .write()
 }
