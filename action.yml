@@ -2,7 +2,8 @@ name: 'basic-ops-tasks'
 description: >-
   Keep a fork up to date with its upstream (parent) repository, or sync one
   branch into another within a repository, by opening a pull request that
-  carries the incoming commits.
+  carries the incoming commits. Or verify that a requirements.txt-like file's
+  libraries and versions exist on a Python package index.
 author: 'ruivieira'
 
 branding:
@@ -12,10 +13,11 @@ branding:
 inputs:
   mode:
     description: >-
-      Which sync to run. "fork": pull from an upstream repository into this
+      Which task to run. "fork": pull from an upstream repository into this
       one. "branch": sync "source-branch" into "target-branch" within this
-      repository. "auto" (default): branch mode when "source-branch" is set,
-      fork mode otherwise.
+      repository. "python-index": verify that every library and version named
+      in "requirements-file" exists on "index-url". "auto" (default): branch
+      mode when "source-branch" is set, fork mode otherwise.
     required: false
     default: 'auto'
   token:
@@ -113,10 +115,66 @@ inputs:
     description: 'Push the sync branch but do not open a pull request.'
     required: false
     default: 'false'
+  requirements-file:
+    description: >-
+      "python-index" mode: path to the requirements.txt-like file to verify.
+      Relative paths resolve against GITHUB_WORKSPACE. The file and every
+      -r/-c include must resolve (after symlinks) inside GITHUB_WORKSPACE.
+      Supports name/extras, PEP 440 specifiers, environment markers, -r/-c
+      includes and --pre. --index-url/--extra-index-url lines are ignored: the
+      index comes from the action inputs.
+    required: false
+    default: 'requirements.txt'
+  index-url:
+    description: >-
+      "python-index" mode: base URL of the PEP 503 simple index, for example
+      https://pypi.org/simple or a devpi/Artifactory/Nexus mirror. This is the
+      only source of index URLs and the only network destination: --index-url
+      and --extra-index-url lines in the requirements file are ignored, URL
+      requirements fail without being fetched, and no authentication is sent.
+    required: false
+    default: 'https://pypi.org/simple'
+  extra-index-urls:
+    description: >-
+      "python-index" mode: comma-separated additional simple index URLs. Like
+      index-url, these are action parameters only; credentials are rejected.
+    required: false
+    default: ''
+  allow-prerelease:
+    description: >-
+      "python-index" mode: accept pre-release versions even when a stable
+      version would otherwise be required. The file's --pre option enables it
+      as well. Pre-releases are accepted when no stable version matches.
+    required: false
+    default: 'false'
+  timeout-seconds:
+    description: '"python-index" mode: per-request HTTP timeout in seconds.'
+    required: false
+    default: '30'
+  python-version:
+    description: >-
+      "python-index" mode: target Python version used to evaluate PEP 508
+      environment markers, for example "3.12.7" (a bare "3.12" works but makes
+      python_full_version comparisons imprecise). When empty, markers are not
+      evaluated and every requirement is checked.
+    required: false
+    default: ''
+  platform:
+    description: >-
+      "python-index" mode: target sys_platform for marker evaluation: linux
+      (default), darwin or win32.
+    required: false
+    default: 'linux'
+  platform-machine:
+    description: >-
+      "python-index" mode: target platform_machine for marker evaluation, for
+      example x86_64 or aarch64. Default: derived from the runner architecture.
+    required: false
+    default: ''
 
 outputs:
   status:
-    description: '"up-to-date", "synced" or "conflicts".'
+    description: '"up-to-date", "synced" or "conflicts" (sync modes).'
   pull-request-number:
     description: 'Number of the opened/updated pull request (empty when none).'
   pull-request-url:
@@ -131,6 +189,14 @@ outputs:
     description: 'Number of commits the pull request brings in.'
   pushed:
     description: '"true" when the head branch was pushed to the fork.'
+  checked-count:
+    description: '"python-index" mode: number of requirements inspected.'
+  failed-count:
+    description: '"python-index" mode: requirements missing or failing to resolve.'
+  skipped-count:
+    description: >-
+      "python-index" mode: requirements skipped (local paths, editables, or an
+      unsatisfied environment marker).
 
 runs:
   using: 'node24'

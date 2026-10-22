@@ -36,7 +36,8 @@ import { createHash } from 'node:crypto';
 import * as os$1 from 'node:os';
 import { devNull } from 'node:os';
 import * as path from 'node:path';
-import { mkdir as mkdir$1, mkdtemp, rm as rm$1 } from 'node:fs/promises';
+import { resolve as resolve$1, dirname, sep as sep$1 } from 'node:path';
+import { mkdir as mkdir$1, readFile, realpath, mkdtemp, rm as rm$1 } from 'node:fs/promises';
 import { execFile } from 'node:child_process';
 
 // We use any as a valid input type
@@ -2208,11 +2209,11 @@ function requireDiagnostics () {
 	return diagnostics;
 }
 
-var request$2;
+var request$3;
 var hasRequiredRequest$1;
 
 function requireRequest$1 () {
-	if (hasRequiredRequest$1) return request$2;
+	if (hasRequiredRequest$1) return request$3;
 	hasRequiredRequest$1 = 1;
 
 	const {
@@ -2694,8 +2695,8 @@ function requireRequest$1 () {
 	  }
 	}
 
-	request$2 = Request;
-	return request$2;
+	request$3 = Request;
+	return request$3;
 }
 
 var dispatcher;
@@ -18279,11 +18280,11 @@ function requireDispatcherWeakref () {
 
 /* globals AbortController */
 
-var request$1;
+var request$2;
 var hasRequiredRequest;
 
 function requireRequest () {
-	if (hasRequiredRequest) return request$1;
+	if (hasRequiredRequest) return request$2;
 	hasRequiredRequest = 1;
 
 	const { extractBody, mixinBody, cloneBody, bodyUnusable } = requireBody();
@@ -19318,8 +19319,8 @@ function requireRequest () {
 	  }
 	]);
 
-	request$1 = { Request, makeRequest, fromInnerRequest, cloneRequest };
-	return request$1;
+	request$2 = { Request, makeRequest, fromInnerRequest, cloneRequest };
+	return request$2;
 }
 
 var fetch_1;
@@ -31552,7 +31553,7 @@ function withDefaults$1(oldEndpoint, newDefaults) {
 }
 
 // pkg/dist-src/index.js
-var request = withDefaults$1(endpoint, defaults_default);
+var request$1 = withDefaults$1(endpoint, defaults_default);
 /* v8 ignore next -- @preserve */
 /* v8 ignore else -- @preserve */
 
@@ -31662,7 +31663,7 @@ function withDefaults(request2, newDefaults) {
 }
 
 // pkg/dist-src/index.js
-withDefaults(request, {
+withDefaults(request$1, {
   headers: {
     "user-agent": `octokit-graphql.js/${VERSION$3} ${getUserAgent()}`
   },
@@ -31795,7 +31796,7 @@ class Octokit {
   constructor(options = {}) {
     const hook = new Hook.Collection();
     const requestDefaults = {
-      baseUrl: request.endpoint.DEFAULTS.baseUrl,
+      baseUrl: request$1.endpoint.DEFAULTS.baseUrl,
       headers: {},
       request: Object.assign({}, options.request, {
         // @ts-ignore internal usage only, no need to type
@@ -31816,7 +31817,7 @@ class Octokit {
     if (options.timeZone) {
       requestDefaults.headers["time-zone"] = options.timeZone;
     }
-    this.request = request.defaults(requestDefaults);
+    this.request = request$1.defaults(requestDefaults);
     this.graphql = withCustomRequest(this.request).defaults(requestDefaults);
     this.log = createLogger(options.log);
     this.hook = hook;
@@ -34597,6 +34598,1126 @@ async function syncRepository(opts) {
     return { status, targetSha, upstreamSha, headSha, commitCount, commits, pushed };
 }
 
+// PEP 440 version parsing and specifier matching.
+//
+// This is the subset needed to answer "does a version satisfying this
+// requirement exist on the index?". It follows the ordering rules that pip
+// (and the packaging library) use, including pre/post/dev ordering, epochs,
+// local versions, wildcard equality and the exclusive-comparison exclusions.
+const PRE_RANK = {
+    a: 0, alpha: 0, b: 1, beta: 1, c: 2, rc: 2, pre: 2, preview: 2,
+};
+const VERSION_RE = new RegExp('^\\s*v?' +
+    '(?:(\\d+)!)?' + // epoch
+    '(\\d+(?:\\.\\d+)*)' + // release
+    '(?:[-_.]?(a|b|c|rc|alpha|beta|pre|preview)[-_.]?(\\d+)?)?' + // pre
+    '(?:(?:-(\\d+))|(?:[-_.]?(post|rev|r)[-_.]?(\\d+)?))?' + // post
+    '(?:[-_.]?(dev)[-_.]?(\\d+)?)?' + // dev
+    '(?:\\+([a-z0-9]+(?:[-_.][a-z0-9]+)*))?' + // local
+    '\\s*$', 'i');
+function parseVersion(input) {
+    const match = VERSION_RE.exec(input);
+    if (!match)
+        return null;
+    const [, epoch, release, preLabel, preNumber, postNumber, postLabel, postLabelNumber, devLabel, devNumber, local] = match;
+    const pre = preLabel === undefined
+        ? null
+        : [PRE_RANK[preLabel.toLowerCase()] ?? 3, preNumber === undefined ? 0 : Number(preNumber)];
+    const post = postNumber !== undefined
+        ? Number(postNumber)
+        : postLabel !== undefined
+            ? (postLabelNumber === undefined ? 0 : Number(postLabelNumber))
+            : null;
+    return {
+        raw: input.trim(),
+        epoch: epoch === undefined ? 0 : Number(epoch),
+        release: release.split('.').map(Number),
+        pre,
+        post,
+        dev: devLabel === undefined ? null : devNumber === undefined ? 0 : Number(devNumber),
+        local: local === undefined ? null : local.toLowerCase(),
+    };
+}
+function isPrerelease(version) {
+    return version.pre !== null || version.dev !== null;
+}
+function compareNumbers(a, b) {
+    const length = Math.max(a.length, b.length);
+    for (let i = 0; i < length; i++) {
+        const left = a[i] ?? 0;
+        const right = b[i] ?? 0;
+        if (left !== right)
+            return left < right ? -1 : 1;
+    }
+    return 0;
+}
+function compareStrings(a, b) {
+    if (a === b)
+        return 0;
+    return a < b ? -1 : 1;
+}
+function preKey(version) {
+    if (version.pre !== null)
+        return version.pre;
+    // A pure dev release sorts before any pre-release; a final release after.
+    if (version.post === null && version.dev !== null)
+        return [-1, 0];
+    return [3, 0];
+}
+function compareLocal(a, b) {
+    if (a === b)
+        return 0;
+    if (a === null)
+        return -1;
+    if (b === null)
+        return 1;
+    const left = a.split(/[-_.]/);
+    const right = b.split(/[-_.]/);
+    const length = Math.max(left.length, right.length);
+    for (let i = 0; i < length; i++) {
+        if (i >= left.length)
+            return -1;
+        if (i >= right.length)
+            return 1;
+        const leftNumeric = /^\d+$/.test(left[i]);
+        const rightNumeric = /^\d+$/.test(right[i]);
+        if (leftNumeric && rightNumeric) {
+            const result = compareNumbers([Number(left[i])], [Number(right[i])]);
+            if (result !== 0)
+                return result;
+        }
+        else if (leftNumeric) {
+            return 1;
+        }
+        else if (rightNumeric) {
+            return -1;
+        }
+        else {
+            const result = compareStrings(left[i], right[i]);
+            if (result !== 0)
+                return result;
+        }
+    }
+    return 0;
+}
+function compareVersions(a, b, ignoreLocal = false) {
+    if (a.epoch !== b.epoch)
+        return a.epoch < b.epoch ? -1 : 1;
+    const release = compareNumbers(a.release, b.release);
+    if (release !== 0)
+        return release;
+    const preA = preKey(a);
+    const preB = preKey(b);
+    if (preA[0] !== preB[0])
+        return preA[0] < preB[0] ? -1 : 1;
+    if (preA[1] !== preB[1])
+        return preA[1] < preB[1] ? -1 : 1;
+    const postA = a.post === null ? -1 : a.post;
+    const postB = b.post === null ? -1 : b.post;
+    if (postA !== postB)
+        return postA < postB ? -1 : 1;
+    const devA = a.dev === null ? Number.POSITIVE_INFINITY : a.dev;
+    const devB = b.dev === null ? Number.POSITIVE_INFINITY : b.dev;
+    if (devA !== devB)
+        return devA < devB ? -1 : 1;
+    if (ignoreLocal)
+        return 0;
+    return compareLocal(a.local, b.local);
+}
+function parseSpecifierSet(text) {
+    const specs = [];
+    for (const piece of text.split(',')) {
+        const trimmed = piece.trim();
+        if (trimmed === '')
+            continue;
+        const match = /^(===|==|!=|<=|>=|~=|<|>)\s*(\S+)$/.exec(trimmed);
+        if (!match)
+            throw new Error(`Invalid version specifier "${trimmed}" in "${text}".`);
+        const op = match[1];
+        let value = match[2];
+        let wildcard = false;
+        if (op === '===') {
+            specs.push({ op, value, version: null, wildcard: false });
+            continue;
+        }
+        if ((op === '==' || op === '!=') && value.endsWith('.*')) {
+            wildcard = true;
+            value = value.slice(0, -2);
+        }
+        const version = parseVersion(value);
+        if (!version)
+            throw new Error(`Invalid version "${value}" in specifier "${trimmed}".`);
+        if (op === '~=' && version.release.length < 2) {
+            throw new Error(`The ~= operator needs at least two release segments, got "${trimmed}".`);
+        }
+        specs.push({ op, value, version, wildcard });
+    }
+    if (specs.length === 0)
+        throw new Error(`Empty version specifier "${text}".`);
+    return { text, specs };
+}
+function releasePrefixMatches(candidate, prefix) {
+    if (candidate.epoch !== prefix.epoch)
+        return false;
+    return prefix.release.every((part, index) => (candidate.release[index] ?? 0) === part);
+}
+function sameReleaseAndEpoch(a, b) {
+    return a.epoch === b.epoch && compareNumbers(a.release, b.release) === 0;
+}
+/** Compare a candidate against a specifier version, ignoring candidate local parts when unspecified. */
+function specCompare(candidate, spec) {
+    const left = spec.local === null ? { ...candidate, local: null } : candidate;
+    return compareVersions(left, spec);
+}
+function matchesSpecifier(specifier, candidate) {
+    const spec = specifier.version;
+    if (specifier.op === '===') {
+        return candidate.raw.toLowerCase() === specifier.value.toLowerCase();
+    }
+    if (spec === null)
+        return false;
+    if (specifier.op === '==' || specifier.op === '!=') {
+        const equal = specifier.wildcard
+            ? releasePrefixMatches(candidate, spec)
+            : specCompare(candidate, spec) === 0;
+        return specifier.op === '==' ? equal : !equal;
+    }
+    if (specifier.op === '~=') {
+        if (specCompare(candidate, spec) < 0)
+            return false;
+        const prefix = { ...spec, release: spec.release.slice(0, -1) };
+        return releasePrefixMatches(candidate, prefix);
+    }
+    const comparison = specCompare(candidate, spec);
+    if (specifier.op === '>=')
+        return comparison >= 0;
+    if (specifier.op === '<=')
+        return comparison <= 0;
+    if (specifier.op === '>') {
+        if (comparison <= 0)
+            return false;
+        // >V must not match a post-release of V unless V is a post-release, nor a
+        // local version of V (PEP 440, exclusive ordered comparison).
+        if (sameReleaseAndEpoch(candidate, spec)) {
+            if (candidate.post !== null && spec.post === null)
+                return false;
+            if (candidate.local !== null)
+                return false;
+        }
+        return true;
+    }
+    if (comparison >= 0)
+        return false;
+    // <V must not match a pre-release of V unless V itself is a pre-release.
+    if (sameReleaseAndEpoch(candidate, spec) && isPrerelease(candidate) && !isPrerelease(spec))
+        return false;
+    return true;
+}
+function matchesSpecifierSet(set, candidate) {
+    return set.specs.every(spec => matchesSpecifier(spec, candidate));
+}
+function specifierMentionsPrerelease(set) {
+    return set.specs.some(spec => spec.version !== null && isPrerelease(spec.version));
+}
+/** True when the set is a single `==` pin (used for the PEP 592 yanked exception). */
+function exactPin(set) {
+    if (set.specs.length !== 1)
+        return null;
+    const spec = set.specs[0];
+    if (spec.op !== '==' || spec.wildcard)
+        return null;
+    return spec.version;
+}
+
+// PEP 508 environment marker parsing and evaluation.
+//
+// Markers let a requirements file pin alternatives that only apply to some
+// interpreters or platforms (`pyyaml-ft==8.0.0 ; python_full_version == '3.13.*'`,
+// `httpx2-jsfetch==1.0 ; sys_platform == 'emscripten'`). Without an environment
+// those pins cannot be verified, so the caller supplies the target interpreter
+// and platform explicitly.
+const MARKER_VARIABLES = [
+    'python_version',
+    'python_full_version',
+    'os_name',
+    'sys_platform',
+    'platform_release',
+    'platform_system',
+    'platform_version',
+    'platform_machine',
+    'platform_python_implementation',
+    'implementation_name',
+    'implementation_version',
+    'extra',
+];
+const VERSION_VARIABLES = new Set(['python_version', 'python_full_version', 'implementation_version']);
+const OPERATOR_CHARS = /^(===|==|!=|<=|>=|~=|<|>|\(|\))/;
+function tokenize(text) {
+    const tokens = [];
+    let index = 0;
+    while (index < text.length) {
+        const rest = text.slice(index);
+        const whitespace = /^\s+/.exec(rest);
+        if (whitespace) {
+            index += whitespace[0].length;
+            continue;
+        }
+        if (rest.startsWith('"') || rest.startsWith("'")) {
+            const quote = rest[0];
+            const end = rest.indexOf(quote, 1);
+            if (end === -1)
+                throw new Error(`Unterminated string in environment marker "${text}".`);
+            tokens.push({ type: 'string', value: rest.slice(1, end) });
+            index += end + 1;
+            continue;
+        }
+        const operator = OPERATOR_CHARS.exec(rest);
+        if (operator) {
+            const value = operator[0];
+            if (value === '(')
+                tokens.push({ type: 'lparen' });
+            else if (value === ')')
+                tokens.push({ type: 'rparen' });
+            else
+                tokens.push({ type: 'operator', value: value });
+            index += value.length;
+            continue;
+        }
+        const word = /^[A-Za-z_][A-Za-z0-9_.]*/.exec(rest);
+        if (!word)
+            throw new Error(`Unexpected character "${rest[0]}" in environment marker "${text}".`);
+        const value = word[0];
+        if (value === 'and' || value === 'or')
+            tokens.push({ type: value });
+        else if (value === 'in')
+            tokens.push({ type: 'operator', value: 'in' });
+        else if (value === 'not') {
+            const following = /^\s+in\b/.exec(rest.slice(value.length));
+            if (!following)
+                throw new Error(`Expected "in" after "not" in environment marker "${text}".`);
+            tokens.push({ type: 'operator', value: 'not in' });
+            index += value.length + following[0].length;
+            continue;
+        }
+        else if (value === 'extra')
+            tokens.push({ type: 'variable', value: 'extra' });
+        else if (MARKER_VARIABLES.includes(value))
+            tokens.push({ type: 'variable', value: value });
+        else
+            throw new Error(`Unknown environment marker variable "${value}".`);
+        index += value.length;
+    }
+    return tokens;
+}
+function parseMarker(text) {
+    const tokens = tokenize(text);
+    let position = 0;
+    const peek = () => tokens[position];
+    const take = () => {
+        const token = tokens[position];
+        if (!token)
+            throw new Error(`Unexpected end of environment marker "${text}".`);
+        position += 1;
+        return token;
+    };
+    const parseOperand = () => {
+        const token = take();
+        if (token.type === 'string')
+            return { type: 'string', value: token.value };
+        if (token.type === 'variable')
+            return { type: 'variable', name: token.value };
+        throw new Error(`Expected a value in environment marker "${text}".`);
+    };
+    const parseComparison = () => {
+        const token = peek();
+        if (token?.type === 'lparen') {
+            take();
+            const inner = parseOr();
+            const close = take();
+            if (close.type !== 'rparen')
+                throw new Error(`Missing ")" in environment marker "${text}".`);
+            return inner;
+        }
+        const left = parseOperand();
+        const operator = take();
+        if (operator.type !== 'operator')
+            throw new Error(`Expected a comparison in environment marker "${text}".`);
+        if (operator.value === 'not in') ;
+        const right = parseOperand();
+        return { kind: 'compare', left, operator: operator.value, right };
+    };
+    const parseAnd = () => {
+        let node = parseComparison();
+        while (peek()?.type === 'and') {
+            take();
+            node = { kind: 'and', left: node, right: parseComparison() };
+        }
+        return node;
+    };
+    const parseOr = () => {
+        let node = parseAnd();
+        while (peek()?.type === 'or') {
+            take();
+            node = { kind: 'or', left: node, right: parseAnd() };
+        }
+        return node;
+    };
+    if (tokens.length === 0)
+        throw new Error('Empty environment marker.');
+    const node = parseOr();
+    if (position !== tokens.length)
+        throw new Error(`Unexpected trailing tokens in environment marker "${text}".`);
+    return node;
+}
+function variableValue(name, environment) {
+    return environment[name] ?? '';
+}
+function resolve(operand, environment) {
+    if (operand.type === 'string')
+        return { value: operand.value, versionVariable: false };
+    return { value: variableValue(operand.name, environment), versionVariable: VERSION_VARIABLES.has(operand.name) };
+}
+function compareValues(left, operator, right) {
+    if (operator === 'in' || operator === 'not in') {
+        const contained = right.value.includes(left.value);
+        return operator === 'in' ? contained : !contained;
+    }
+    if (left.versionVariable || right.versionVariable) {
+        const leftVersion = parseVersion(left.value);
+        const rightVersion = parseVersion(right.value);
+        if (leftVersion && rightVersion) {
+            try {
+                return matchesSpecifierSet(parseSpecifierSet(`${operator}${right.value}`), leftVersion);
+            }
+            catch {
+                const comparison = compareVersions(leftVersion, rightVersion);
+                if (operator === '==' || operator === '===')
+                    return comparison === 0;
+                if (operator === '!=')
+                    return comparison !== 0;
+                if (operator === '<')
+                    return comparison < 0;
+                if (operator === '<=')
+                    return comparison <= 0;
+                if (operator === '>')
+                    return comparison > 0;
+                return comparison >= 0;
+            }
+        }
+    }
+    switch (operator) {
+        case '==':
+        case '===':
+            return left.value === right.value;
+        case '!=':
+            return left.value !== right.value;
+        case '<':
+            return left.value < right.value;
+        case '<=':
+            return left.value <= right.value;
+        case '>':
+            return left.value > right.value;
+        case '>=':
+            return left.value >= right.value;
+        default:
+            return false;
+    }
+}
+function evaluateMarker(node, environment) {
+    if (node.kind === 'and')
+        return evaluateMarker(node.left, environment) && evaluateMarker(node.right, environment);
+    if (node.kind === 'or')
+        return evaluateMarker(node.left, environment) || evaluateMarker(node.right, environment);
+    if (node.kind !== 'compare')
+        return false;
+    return compareValues(resolve(node.left, environment), node.operator, resolve(node.right, environment));
+}
+function evaluateMarkerText(text, environment) {
+    return evaluateMarker(parseMarker(text), environment);
+}
+function defaultMachine() {
+    const arch = process.arch;
+    if (arch === 'x64')
+        return 'x86_64';
+    if (arch === 'arm64')
+        return 'aarch64';
+    if (arch === 'ia32')
+        return 'i686';
+    return arch;
+}
+function buildMarkerEnvironment(options) {
+    const pythonVersion = options.pythonVersion.trim();
+    if (!/^\d+\.\d+(\.\d+)?([a-z]+\d+)?$/i.test(pythonVersion)) {
+        throw new Error(`python-version must look like "3.12" or "3.12.7", got "${options.pythonVersion}".`);
+    }
+    const release = /^(\d+)\.(\d+)/.exec(pythonVersion);
+    if (!release)
+        throw new Error(`python-version must start with a major.minor release, got "${pythonVersion}".`);
+    const platform = (options.platform ?? 'linux').trim().toLowerCase();
+    const system = platform === 'darwin' ? 'Darwin' : platform === 'win32' ? 'Windows' : 'Linux';
+    return {
+        python_version: `${release[1]}.${release[2]}`,
+        python_full_version: pythonVersion,
+        os_name: platform === 'win32' ? 'nt' : 'posix',
+        sys_platform: platform,
+        platform_release: '',
+        platform_system: system,
+        platform_version: '',
+        platform_machine: options.machine?.trim() || defaultMachine(),
+        platform_python_implementation: 'CPython',
+        implementation_name: 'cpython',
+        implementation_version: pythonVersion,
+        extra: '',
+    };
+}
+function describeMarkerEnvironment(environment) {
+    return `python ${environment.python_version}, ${environment.sys_platform}/${environment.platform_machine}`;
+}
+
+// Parsing and verification of requirements.txt-like files against a PEP 503
+// simple index (JSON via PEP 691/700, HTML as a fallback).
+//
+// Scope: every requirement that names a project and a version specifier is
+// checked against the index; local paths are skipped; VCS, file:// and external
+// URL requirements fail without being fetched. The only network destination is
+// the index URL supplied by the action inputs. PEP 508 markers are evaluated
+// when the caller supplies a target environment. Requirements files and -r/-c
+// includes must resolve inside the checkout; the file is untrusted input in
+// pull-request runs.
+const INCLUDED_EXTENSIONS = ['.tar.gz', '.tar.bz2', '.tar.xz', '.tgz', '.zip'];
+const MAX_INDEX_BYTES = 20 * 1024 * 1024;
+function normalizeName(name) {
+    return name.trim().toLowerCase().replace(/[-_.]+/g, '-');
+}
+function splitExtras(text) {
+    if (!text)
+        return [];
+    return text.replace(/^\[|\]$/g, '').split(',').map(item => item.trim()).filter(Boolean);
+}
+/** Strip a trailing comment; `#` only starts one after whitespace (URL fragments stay intact). */
+function stripComment(line) {
+    return line.replace(/(^|\s+)#.*$/, '');
+}
+function parseRequirementText(text, source) {
+    const raw = text.trim();
+    const markerIndex = raw.indexOf(';');
+    const withoutMarker = markerIndex === -1 ? raw : raw.slice(0, markerIndex).trim();
+    const marker = markerIndex === -1 ? undefined : raw.slice(markerIndex + 1).trim();
+    if (marker !== undefined) {
+        try {
+            parseMarker(marker);
+        }
+        catch (error) {
+            throw new Error(`${source}: ${error instanceof Error ? error.message : String(error)}`);
+        }
+    }
+    const withMarker = (requirement) => marker === undefined ? requirement : { ...requirement, marker };
+    const direct = /^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(\[[^\]]*\])?\s*@\s*(\S.*)$/.exec(withoutMarker);
+    if (direct) {
+        return withMarker({
+            raw,
+            source,
+            kind: 'url',
+            name: direct[1],
+            extras: splitExtras(direct[2]),
+            specifier: null,
+            url: direct[3].trim(),
+        });
+    }
+    if (/^(git|hg|svn|bzr)\+/i.test(withoutMarker)) {
+        return withMarker({ raw, source, kind: 'vcs', name: null, extras: [], specifier: null, url: withoutMarker });
+    }
+    if (/^https?:\/\//i.test(withoutMarker) || /^ftp:\/\//i.test(withoutMarker)) {
+        return withMarker({ raw, source, kind: 'url', name: null, extras: [], specifier: null, url: withoutMarker });
+    }
+    if (/^(\.{1,2}\/|\/|~\/|[A-Za-z]:\\)/.test(withoutMarker) || withoutMarker === '.' || withoutMarker === '..') {
+        return withMarker({ raw, source, kind: 'path', name: null, extras: [], specifier: null, url: withoutMarker });
+    }
+    const named = /^([A-Za-z0-9][A-Za-z0-9._-]*)\s*(\[[^\]]*\])?\s*(.*)$/.exec(withoutMarker);
+    if (!named)
+        throw new Error(`${source}: cannot parse requirement "${raw}".`);
+    const specifierText = named[3].trim();
+    return withMarker({
+        raw,
+        source,
+        kind: 'index',
+        name: named[1],
+        extras: splitExtras(named[2]),
+        specifier: specifierText === '' ? null : parseSpecifierSet(specifierText),
+        url: null,
+    });
+}
+function optionValue(option, line) {
+    if (line === option)
+        return null;
+    if (line.startsWith(`${option} `))
+        return line.slice(option.length + 1).trim();
+    if (line.startsWith(`${option}=`))
+        return line.slice(option.length + 1).trim();
+    return undefined;
+}
+async function parseRequirementsFile(file, options = {}) {
+    const result = { requirements: [], allowPrerelease: false, warnings: [] };
+    const stack = [];
+    await readFileInto(resolve$1(file), result, stack, options);
+    return result;
+}
+async function assertInsideWorkspace(file, options) {
+    if (!options.workspace)
+        return;
+    const [resolvedFile, resolvedWorkspace] = await Promise.all([
+        realpath(file).catch(() => null),
+        realpath(options.workspace).catch(() => options.workspace),
+    ]);
+    // A missing file is reported by readFile with its own message.
+    if (resolvedFile === null)
+        return;
+    const prefix = resolvedWorkspace.endsWith(sep$1) ? resolvedWorkspace : `${resolvedWorkspace}${sep$1}`;
+    if (resolvedFile !== resolvedWorkspace && !resolvedFile.startsWith(prefix)) {
+        throw new Error(`Refusing to read "${file}": it resolves to "${resolvedFile}", outside GITHUB_WORKSPACE ` +
+            `("${resolvedWorkspace}"). Requirements files and -r/-c includes must live in the repository checkout.`);
+    }
+}
+async function readFileInto(file, result, stack, options) {
+    await assertInsideWorkspace(file, options);
+    if (stack.includes(file)) {
+        result.warnings.push(`${file}: include cycle ignored.`);
+        return;
+    }
+    if (stack.length >= 25)
+        throw new Error(`${file}: include depth exceeds 25 files.`);
+    let content;
+    try {
+        content = await readFile(file, 'utf8');
+    }
+    catch (error) {
+        const reason = error instanceof Error ? error.message : String(error);
+        throw new Error(`Cannot read requirements file "${file}": ${reason}`);
+    }
+    stack.push(file);
+    try {
+        const lines = joinContinuations(content.replace(/\r\n?/g, '\n').split('\n'));
+        for (let index = 0; index < lines.length; index++) {
+            const { text: joined, line } = lines[index];
+            const text = stripComment(joined).trim();
+            if (text === '')
+                continue;
+            const source = `${file}:${line}`;
+            const takeValue = (option) => {
+                const inline = optionValue(option, text);
+                if (inline === null) {
+                    const next = index + 1 < lines.length ? stripComment(lines[index + 1].text).trim() : '';
+                    if (next === '')
+                        return undefined;
+                    index += 1;
+                    return next;
+                }
+                return inline;
+            };
+            if (/^--?e(ditable)?(\s|$)/.test(text)) {
+                const value = takeValue(text.startsWith('--editable') ? '--editable' : '-e');
+                result.requirements.push({
+                    raw: text,
+                    source,
+                    kind: 'editable',
+                    name: null,
+                    extras: [],
+                    specifier: null,
+                    url: typeof value === 'string' ? value : null,
+                });
+                continue;
+            }
+            const include = /^(?:-r|--requirement)(?:\s+|=)(\S+)$/.exec(text);
+            const constraint = /^(?:-c|--constraint)(?:\s+|=)(\S+)$/.exec(text);
+            const included = include ?? constraint;
+            if (included) {
+                const includePath = resolve$1(dirname(file), included[1]);
+                await readFileInto(includePath, result, stack, options);
+                continue;
+            }
+            if (/^(?:-i|--index-url|--extra-index-url)(?:\s|=|$)/.test(text)) {
+                result.warnings.push(`${source}: index options in requirements files are ignored; ` +
+                    "the index comes from the action's index-url input.");
+                continue;
+            }
+            if (/^--pre$/.test(text)) {
+                result.allowPrerelease = true;
+                continue;
+            }
+            if (/^(?:-f|--find-links)(?:\s|=|$)/.test(text)) {
+                result.warnings.push(`${source}: --find-links is not checked; only index versions are verified.`);
+                continue;
+            }
+            if (/^--?(hash|trusted-host|no-index|require-hashes|only-binary|no-binary|prefer-binary|use-feature|use-deprecated|config-settings|global-option|no-deps|progress-bar|no-cache-dir|exists-action|cert|client-cert|proxy|retries|timeout|log)(\s|=|$)/.test(text)) {
+                continue;
+            }
+            if (/^--hash=/.test(text))
+                continue;
+            // Any other long option is a pip flag this check does not need to
+            // evaluate (for example --use-pep517). Ignore it, but say so.
+            if (/^--[a-z][a-z0-9-]*(?:\s|=|$)/i.test(text)) {
+                const option = text.split(/[\s=]/)[0];
+                result.warnings.push(`${source}: option "${option}" is not evaluated.`);
+                continue;
+            }
+            const cleaned = text.replace(/(^|\s)--hash=\S+/g, ' ').trim();
+            if (cleaned === '')
+                continue;
+            if (cleaned.startsWith('-')) {
+                throw new Error(`${source}: unsupported pip option "${cleaned}".`);
+            }
+            result.requirements.push(parseRequirementText(cleaned, source));
+        }
+    }
+    finally {
+        stack.pop();
+    }
+}
+function joinContinuations(rawLines) {
+    const joined = [];
+    let buffer = '';
+    let start = 0;
+    rawLines.forEach((line, index) => {
+        if (buffer === '')
+            start = index + 1;
+        if (line.endsWith('\\')) {
+            buffer += `${line.slice(0, -1)} `;
+            return;
+        }
+        joined.push({ text: `${buffer}${line}`, line: start });
+        buffer = '';
+    });
+    if (buffer !== '')
+        joined.push({ text: buffer, line: start });
+    return joined;
+}
+/** Extract a version from a distribution filename (wheel or sdist). */
+function versionFromFilename(filename, normalizedName) {
+    const lower = filename.toLowerCase();
+    if (lower.endsWith('.whl')) {
+        const parts = filename.slice(0, -4).split('-');
+        // The distribution segment may itself contain separators in malformed or
+        // hand-built filenames, so try every split point before the version.
+        for (let index = 1; index < parts.length; index++) {
+            if (normalizeName(parts.slice(0, index).join('-')) !== normalizedName)
+                continue;
+            const version = parseVersion(parts[index]);
+            if (version)
+                return version;
+        }
+        return null;
+    }
+    const extension = INCLUDED_EXTENSIONS.find(ext => lower.endsWith(ext));
+    if (!extension)
+        return null;
+    const base = filename.slice(0, -extension.length);
+    const pattern = normalizeName(normalizedName).replace(/-/g, '[-_.]');
+    const match = new RegExp(`^${pattern}-(.+)$`, 'i').exec(base);
+    return match ? parseVersion(match[1]) : null;
+}
+function indexLocation(raw) {
+    let url;
+    try {
+        url = new URL(raw);
+    }
+    catch {
+        throw new Error('Invalid index URL: an absolute http or https URL is required.');
+    }
+    if (url.protocol !== 'https:' && url.protocol !== 'http:') {
+        throw new Error('Index URL must use http or https.');
+    }
+    if (url.username !== '' || url.password !== '') {
+        throw new Error(`Index URL "${url.origin}${url.pathname}" must not embed credentials: this action sends no authentication.`);
+    }
+    const href = url.toString().replace(/\/+$/, '');
+    return { href, display: `${url.origin}${url.pathname.replace(/\/+$/, '')}` };
+}
+function displayIndexUrl(raw) {
+    return indexLocation(raw).display;
+}
+async function readCapped(response) {
+    const body = response.body;
+    if (body === null)
+        return '';
+    const reader = body.getReader();
+    const chunks = [];
+    let size = 0;
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done)
+            break;
+        if (value) {
+            size += value.byteLength;
+            if (size > MAX_INDEX_BYTES) {
+                await reader.cancel();
+                throw new Error(`Index response exceeded ${MAX_INDEX_BYTES / (1024 * 1024)} MiB.`);
+            }
+            chunks.push(value);
+        }
+    }
+    return Buffer.concat(chunks.map(chunk => Buffer.from(chunk))).toString('utf8');
+}
+async function request(url, timeoutMs, method) {
+    const headers = {
+        accept: 'application/vnd.pypi.simple.v1+json, application/vnd.pypi.simple.v1+html;q=0.9, text/html;q=0.8',
+        'user-agent': 'basic-ops-tasks-python-index-check',
+    };
+    return fetch(url, { method, headers, redirect: 'follow', signal: AbortSignal.timeout(timeoutMs) });
+}
+function collectVersions(entries, normalizedName, listed) {
+    const byRaw = new Map();
+    for (const raw of listed) {
+        const version = parseVersion(raw);
+        if (version)
+            byRaw.set(raw, { version, files: 0, yankedFiles: 0 });
+    }
+    for (const entry of entries) {
+        const version = versionFromFilename(entry.filename, normalizedName);
+        if (!version)
+            continue;
+        const existing = byRaw.get(version.raw);
+        if (existing) {
+            existing.files += 1;
+            if (entry.yanked)
+                existing.yankedFiles += 1;
+        }
+        else {
+            byRaw.set(version.raw, { version, files: 1, yankedFiles: entry.yanked ? 1 : 0 });
+        }
+    }
+    return [...byRaw.values()].map(item => ({
+        version: item.version,
+        yanked: item.files > 0 && item.yankedFiles === item.files,
+    }));
+}
+function parseJsonIndex(body, normalizedName) {
+    let parsed;
+    try {
+        parsed = JSON.parse(body);
+    }
+    catch {
+        return null;
+    }
+    const listed = Array.isArray(parsed.versions) ? parsed.versions.filter((item) => typeof item === 'string') : [];
+    const files = Array.isArray(parsed.files) ? parsed.files : [];
+    const entries = files
+        .filter(file => typeof file.filename === 'string')
+        .map(file => ({ filename: file.filename, yanked: file.yanked === true || file.yanked === 'true' }));
+    if (listed.length === 0 && entries.length === 0)
+        return [];
+    return collectVersions(entries, normalizedName, listed);
+}
+function parseHtmlIndex(body, normalizedName) {
+    const entries = [];
+    const anchor = /<a\s([^>]*)>([^<]*)<\/a>/gi;
+    for (let match = anchor.exec(body); match !== null; match = anchor.exec(body)) {
+        const attributes = match[1];
+        const filename = match[2].trim();
+        if (filename === '')
+            continue;
+        entries.push({ filename, yanked: /\bdata-yanked(?:\s*=|\s|$)/i.test(attributes) });
+    }
+    return collectVersions(entries, normalizedName, []);
+}
+async function fetchProject(location, normalizedName, timeoutMs) {
+    const url = `${location.href}/${encodeURIComponent(normalizedName)}/`;
+    const response = await request(url, timeoutMs, 'GET');
+    if (response.status === 404 || response.status === 410)
+        return null;
+    if (!response.ok) {
+        throw new Error(`${location.display}: HTTP ${response.status} for /${normalizedName}/`);
+    }
+    const body = await readCapped(response);
+    const json = parseJsonIndex(body, normalizedName);
+    return json ?? parseHtmlIndex(body, normalizedName);
+}
+function describeAvailable(versions) {
+    const sorted = [...versions].sort((a, b) => compareVersions(b.version, a.version));
+    const names = sorted.slice(0, 8).map(item => `${item.version.raw}${item.yanked ? ' (yanked)' : ''}`);
+    const overflow = sorted.length > names.length ? `, … (${sorted.length} total)` : '';
+    return names.length === 0 ? 'none' : `${names.join(', ')}${overflow}`;
+}
+async function checkIndexed(requirement, options, locations, cache, timeoutMs) {
+    const name = requirement.name;
+    const normalized = normalizeName(name);
+    const perIndex = await Promise.all(locations.map(async (location) => {
+        const key = `${location.href}|${normalized}`;
+        let pending = cache.get(key);
+        if (!pending) {
+            pending = fetchProject(location, normalized, timeoutMs);
+            cache.set(key, pending);
+        }
+        try {
+            return { location, versions: await pending };
+        }
+        catch (error) {
+            return { location, versions: null, error: error instanceof Error ? error.message : String(error) };
+        }
+    }));
+    const failed = perIndex.filter(item => item.error !== undefined);
+    const found = perIndex.filter(item => item.versions !== null);
+    const note = failed.length > 0
+        ? ` [warning: ${failed.map(item => item.error).join('; ')}]`
+        : '';
+    if (found.length === 0) {
+        if (failed.length > 0) {
+            return { requirement, status: 'error', detail: failed.map(item => item.error).join('; ') };
+        }
+        return {
+            requirement,
+            status: 'missing',
+            detail: `project "${name}" not found on ${locations.map(item => item.display).join(', ')}`,
+        };
+    }
+    const merged = new Map();
+    for (const item of found) {
+        for (const version of item.versions) {
+            const existing = merged.get(version.version.raw);
+            if (existing) {
+                // A version is yanked only when every index marks it yanked.
+                existing.yanked = existing.yanked && version.yanked;
+            }
+            else {
+                merged.set(version.version.raw, { ...version });
+            }
+        }
+    }
+    const available = [...merged.values()];
+    const sorted = [...available].sort((a, b) => compareVersions(b.version, a.version));
+    if (sorted.length === 0) {
+        return {
+            requirement,
+            status: 'missing',
+            detail: `project "${name}" is listed on the index but publishes no parseable versions${note}`,
+        };
+    }
+    if (requirement.specifier === null) {
+        return {
+            requirement,
+            status: 'ok',
+            detail: `${available.length} version(s) available (latest ${sorted[0].version.raw})${note}`,
+        };
+    }
+    const specifier = requirement.specifier;
+    const matching = sorted.filter(item => matchesSpecifierSet(specifier, item.version));
+    const installable = matching.filter(item => !item.yanked);
+    if (installable.length > 0) {
+        const best = installable[0];
+        const prereleaseNote = isPrerelease(best.version) && !options.allowPrerelease && !specifierMentionsPrerelease(specifier)
+            ? ' (pre-release; no stable version matches)'
+            : '';
+        return { requirement, status: 'ok', detail: `resolves to ${best.version.raw}${prereleaseNote}${note}` };
+    }
+    if (matching.length > 0) {
+        const pin = exactPin(specifier);
+        const pinnedYanked = pin !== null && matching.some(item => compareVersions(item.version, pin) === 0);
+        if (pinnedYanked) {
+            return {
+                requirement,
+                status: 'ok',
+                detail: `resolves to ${pin.raw} (yanked; allowed by exact pin)${note}`,
+            };
+        }
+        return {
+            requirement,
+            status: 'missing',
+            detail: `all versions matching "${specifier.text}" are yanked (${describeAvailable(matching)})${note}`,
+        };
+    }
+    return {
+        requirement,
+        status: 'missing',
+        detail: `no version matches "${specifier.text}"; available: ${describeAvailable(sorted)}${note}`,
+    };
+}
+async function checkOne(requirement, options, locations, cache, timeoutMs) {
+    try {
+        if (requirement.marker && options.markerEnvironment) {
+            if (!evaluateMarkerText(requirement.marker, options.markerEnvironment)) {
+                return {
+                    requirement,
+                    status: 'skipped',
+                    detail: `environment marker not satisfied (${describeMarkerEnvironment(options.markerEnvironment)})`,
+                };
+            }
+        }
+        if (requirement.kind === 'path' || requirement.kind === 'editable') {
+            return { requirement, status: 'skipped', detail: 'local path (no index request)' };
+        }
+        if (requirement.kind === 'vcs') {
+            return {
+                requirement,
+                status: 'error',
+                detail: 'VCS requirements are not supported: only the configured index is queried',
+            };
+        }
+        if (requirement.kind === 'url') {
+            const url = requirement.url;
+            if (/^(git|hg|svn|bzr)\+/i.test(url)) {
+                return {
+                    requirement,
+                    status: 'error',
+                    detail: 'VCS requirements are not supported: only the configured index is queried',
+                };
+            }
+            if (/^file:\/\//i.test(url)) {
+                return {
+                    requirement,
+                    status: 'error',
+                    detail: 'file:// requirements are not supported: only the configured index is queried',
+                };
+            }
+            return {
+                requirement,
+                status: 'error',
+                detail: 'external URL requirements are not supported: they cannot be verified against the index ' +
+                    'and the action will not fetch them',
+            };
+        }
+        return await checkIndexed(requirement, options, locations, cache, timeoutMs);
+    }
+    catch (error) {
+        return {
+            requirement,
+            status: 'error',
+            detail: error instanceof Error ? error.message : String(error),
+        };
+    }
+}
+async function checkRequirements(requirements, options) {
+    if (options.indexUrls.length === 0)
+        throw new Error('At least one index URL is required.');
+    const locations = options.indexUrls.map(indexLocation);
+    const timeoutMs = options.timeoutMs ?? 30_000;
+    const concurrency = Math.max(1, Math.min(options.concurrency ?? 6, requirements.length || 1));
+    const cache = new Map();
+    const results = new Array(requirements.length);
+    let next = 0;
+    const worker = async () => {
+        for (;;) {
+            const index = next++;
+            if (index >= requirements.length)
+                return;
+            results[index] = await checkOne(requirements[index], options, locations, cache, timeoutMs);
+        }
+    };
+    await Promise.all(Array.from({ length: concurrency }, worker));
+    return results;
+}
+
+// `mode: python-index`: verify that every distribution named in a
+// requirements.txt-like file, at a version the file allows, exists on the
+// configured Python package index. Fails the step (and therefore the CI job)
+// when a library or version is missing.
+function html$1(text) {
+    return text.replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+}
+function statusLabel(result) {
+    if (result.status === 'ok')
+        return '✅ ok';
+    if (result.status === 'skipped')
+        return '⏭️ skipped';
+    if (result.status === 'missing')
+        return '❌ missing';
+    return '💥 error';
+}
+async function runPythonIndexCheck() {
+    const workspace = process.env.GITHUB_WORKSPACE || process.cwd();
+    const requirementsInput = getInput('requirements-file').trim() || 'requirements.txt';
+    const requirementsFile = resolve$1(workspace, requirementsInput);
+    const indexUrl = getInput('index-url').trim() || 'https://pypi.org/simple';
+    const extraIndexUrls = getInput('extra-index-urls')
+        .split(',')
+        .map(item => item.trim())
+        .filter(Boolean);
+    const allowPrerelease = getBooleanInput('allow-prerelease');
+    const timeoutSeconds = Number(getInput('timeout-seconds').trim() || '30');
+    if (!Number.isFinite(timeoutSeconds) || timeoutSeconds <= 0) {
+        throw new Error("The 'timeout-seconds' input must be a positive number.");
+    }
+    const pythonVersion = getInput('python-version').trim();
+    const markerEnvironment = pythonVersion
+        ? buildMarkerEnvironment({
+            pythonVersion,
+            platform: getInput('platform').trim() || 'linux',
+            machine: getInput('platform-machine').trim(),
+        })
+        : undefined;
+    const indexUrls = [...new Set([indexUrl, ...extraIndexUrls])];
+    const parsed = await parseRequirementsFile(requirementsFile, { workspace });
+    for (const warning$1 of parsed.warnings)
+        warning(warning$1);
+    info(`Checking ${requirementsFile} against ${indexUrls.map(displayIndexUrl).join(', ')} …`);
+    if (markerEnvironment) {
+        info(`Evaluating environment markers for ${describeMarkerEnvironment(markerEnvironment)}.`);
+    }
+    else if (parsed.requirements.some(requirement => requirement.marker !== undefined)) {
+        warning('Environment markers are not evaluated because the python-version input is empty; ' +
+            'marker-gated requirements are checked unconditionally.');
+    }
+    if (parsed.allowPrerelease && !allowPrerelease) {
+        info('The requirements file requests pre-releases (--pre).');
+    }
+    if (parsed.requirements.length === 0) {
+        warning(`${requirementsFile} contains no requirements to check.`);
+        setOutput('checked-count', '0');
+        setOutput('failed-count', '0');
+        setOutput('skipped-count', '0');
+        return;
+    }
+    const results = await checkRequirements(parsed.requirements, {
+        indexUrls,
+        markerEnvironment,
+        allowPrerelease: allowPrerelease || parsed.allowPrerelease,
+        timeoutMs: Math.round(timeoutSeconds * 1000),
+    });
+    for (const result of results) {
+        const message = `${result.requirement.raw} (${result.requirement.source}): ${result.detail}`;
+        if (result.status === 'ok')
+            info(`✅ ${message}`);
+        else if (result.status === 'skipped')
+            warning(`⏭️ ${message}`);
+        else if (result.status === 'missing')
+            error(`❌ ${message}`);
+        else
+            error(`💥 ${message}`);
+    }
+    const failed = results.filter(result => result.status === 'missing' || result.status === 'error');
+    const skipped = results.filter(result => result.status === 'skipped');
+    setOutput('checked-count', String(results.length));
+    setOutput('failed-count', String(failed.length));
+    setOutput('skipped-count', String(skipped.length));
+    const rows = [
+        ['Requirement', 'Source', 'Result', 'Detail'].map(data => ({ data: html$1(data), header: true })),
+        ...results.map(result => [
+            { data: html$1(result.requirement.raw) },
+            { data: html$1(result.requirement.source) },
+            { data: statusLabel(result) },
+            { data: html$1(result.detail) },
+        ]),
+    ];
+    await summary
+        .addHeading('Python index check', 2)
+        .addRaw(`<p>Checked <strong>${results.length}</strong> requirement(s) against ` +
+        `${indexUrls.map(url => `<code>${html$1(displayIndexUrl(url))}</code>`).join(', ')}: ` +
+        `${failed.length} missing/error, ${skipped.length} skipped` +
+        `${markerEnvironment ? `; markers evaluated for ${html$1(describeMarkerEnvironment(markerEnvironment))}` : ''}.</p>`)
+        .addTable(rows)
+        .write();
+    if (failed.length > 0) {
+        const names = failed
+            .slice(0, 10)
+            .map(result => `${result.requirement.raw} (${result.detail})`)
+            .join('; ');
+        const overflow = failed.length > 10 ? `; and ${failed.length - 10} more` : '';
+        setFailed(`${failed.length} of ${results.length} requirement(s) are not available on the configured index: ` +
+            `${names}${overflow}`);
+        return;
+    }
+    info(`All ${results.length - skipped.length} verifiable requirement(s) exist on the index.`);
+}
+
 const REPOSITORY_PATTERN = /^[\w.-]+\/[\w.-]+$/;
 /** Raw and encoded credentials to scrub from diagnostics. */
 const secrets = [];
@@ -34689,6 +35810,14 @@ function buildPullRequestBody(result, server, upstreamRepo, upstreamBranch, targ
         `Automated by the [basic-ops-tasks](${server}/ruivieira/basic-ops-tasks)/fork-sync action.`);
 }
 async function run() {
+    const modeInput = getInput('mode').trim() || 'auto';
+    if (!['auto', 'fork', 'branch', 'python-index'].includes(modeInput)) {
+        throw new Error(`mode must be "auto", "fork", "branch" or "python-index", got "${modeInput}".`);
+    }
+    if (modeInput === 'python-index') {
+        await runPythonIndexCheck();
+        return;
+    }
     const token = getInput('token');
     if (!token) {
         throw new Error("The 'token' input is empty; pass a token with contents:write and pull-requests:write " +
@@ -34705,10 +35834,6 @@ async function run() {
     const upstreamBranchInput = getInput('upstream-branch').trim();
     const targetBranchInput = getInput('target-branch').trim();
     const sourceBranchInput = getInput('source-branch').trim();
-    const modeInput = getInput('mode').trim() || 'auto';
-    if (modeInput !== 'auto' && modeInput !== 'fork' && modeInput !== 'branch') {
-        throw new Error(`mode must be "auto", "fork" or "branch", got "${modeInput}".`);
-    }
     const branchMode = modeInput === 'branch' || (modeInput === 'auto' && sourceBranchInput !== '');
     if (modeInput === 'branch' && !sourceBranchInput) {
         throw new Error("The 'mode: branch' input requires 'source-branch' to be set.");

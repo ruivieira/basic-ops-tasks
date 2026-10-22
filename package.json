@@ -1,14 +1,14 @@
 {
   "name": "fork-sync-action",
   "version": "1.0.0",
-  "description": "GitHub Action: sync a fork with its upstream (parent) repository by opening a pull request",
+  "description": "GitHub Action: sync a fork with its upstream (parent) repository by opening a pull request, or verify requirements against a Python package index",
   "main": "dist/index.js",
   "type": "module",
   "private": true,
   "scripts": {
     "build": "rollup --config rollup.config.ts --configPlugin @rollup/plugin-typescript",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build --silent && node test/local-sync.test.mjs && node --test test/security.test.mjs"
+    "test": "npm run build --silent && node test/local-sync.test.mjs && node --import ./test/register-ts-hooks.mjs --test test/security.test.mjs test/python-index.test.mjs"
   },
   "dependencies": {
     "@actions/core": "^3.0.1",

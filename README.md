@@ -1,12 +1,15 @@
 # basic-ops-tasks
 
-A Node 24 GitHub Action that imports commits from a trusted upstream repository,
-or between branches of the same repository, into a dedicated sync branch and
-opens a reviewable pull request. Built with GitHub's Actions toolkit and Rollup;
-`dist/index.js` is the runtime executed by consumers.
+A Node 24 GitHub Action with two tasks. In the sync modes (`fork`, `branch`) it
+imports commits from a trusted upstream repository, or between branches of the
+same repository, into a dedicated sync branch and opens a reviewable pull request.
+In `python-index` mode it verifies that every library and version named in a
+requirements.txt-like file exists on a Python package index, failing the job when
+one does not. Built with GitHub's Actions toolkit and Rollup; `dist/index.js` is
+the runtime executed by consumers.
 
-**The target branch is not directly updated. The sync branch is published before
-PR review. Imported code is not automatically safe to execute.**
+**In sync modes the target branch is not directly updated. The sync branch is
+published before PR review. Imported code is not automatically safe to execute.**
 
 ## Quick start
 
@@ -219,11 +222,104 @@ Push without PR (job needs only `contents: write`):
     allow-head-update: true # deliberate repeated updates of this dedicated branch
 ```
 
+## Python index check
+
+`mode: python-index` reads a requirements.txt-like file, resolves every project
+name and version specifier against a PEP 503 simple index, and fails the step
+(and therefore the CI job) when a library or version is missing. It needs no
+`token` and no repository write permissions:
+
+```yaml
+name: Verify requirements
+on:
+  pull_request:
+    paths: ["requirements*.txt", "constraints*.txt"]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  requirements:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@<REVIEWED_FULL_COMMIT_SHA>
+        with:
+          persist-credentials: false
+      - uses: ruivieira/basic-ops-tasks@<REVIEWED_FULL_COMMIT_SHA>
+        with:
+          mode: python-index
+          requirements-file: requirements.txt
+          index-url: https://pypi.org/simple
+          python-version: '3.12.7' # enables PEP 508 environment-marker evaluation
+```
+
+Useful for a mirror with no authentication:
+
+```yaml
+- uses: ruivieira/basic-ops-tasks@<REVIEWED_FULL_COMMIT_SHA>
+  with:
+    mode: python-index
+    requirements-file: requirements-dev.txt
+    index-url: https://packages.example.com/simple
+    timeout-seconds: '60'
+```
+
+Indexes must be anonymous. The action never sends an `Authorization` header,
+and index or artifact URLs containing `user:password@` are rejected, so a
+private index that requires credentials is not supported. `--index-url` and
+`--extra-index-url` lines inside the requirements file are ignored with a
+warning: `index-url` (plus `extra-index-urls`) is the only source of index
+URLs, so a pull request cannot redirect the check at another host.
+
+### What is verified
+
+- Project names (PEP 503-normalized) must exist on the index.
+- PEP 440 specifiers (`==`, `!=`, `<=`, `>=`, `<`, `>`, `~=`, `===`, `==1.4.*`)
+  must match at least one installable version. Pre-releases are accepted when no
+  stable version matches, matching pip; `allow-prerelease: true` or a `--pre`
+  line in the file relaxes this further.
+- PEP 592 yanked versions are treated as unavailable unless the requirement is an
+  exact `==` pin, which pip also allows.
+- Extras (`requests[socks]`), line continuations, `--hash` options, `-r`/`-c`
+  includes and `--pre` lines are parsed. `--index-url` and `--extra-index-url`
+  lines are ignored (with a warning); the index comes from the action inputs.
+- PEP 508 environment markers (`; sys_platform == 'emscripten'`,
+  `; python_full_version == '3.13.*'`) are evaluated when `python-version` is
+  set; requirements whose marker is false are skipped. A skipped marker-gated
+  requirement never fails the job. Without `python-version`, markers are not
+  evaluated and the action warns that every requirement is checked
+  unconditionally.
+- Direct artifact requirements (`pkg @ https://…`), `file://` URLs and VCS
+  references (`git+…`, `hg+…`, `svn+…`, `bzr+…`) fail: the action never fetches
+  them, and a hermetic Konflux build cannot prefetch those protocols from an
+  index either.
+- Local paths and `-e` editables are reported as skipped (they trigger no
+  request); `--find-links` is ignored with a warning.
+- The configured index is the only network destination. Nothing in the
+  requirements file can make the action contact another host: URL requirements
+  fail before any request is made.
+- The requirements file and every `-r`/`-c` include must resolve, after
+  following symlinks, inside `GITHUB_WORKSPACE`. Paths elsewhere (including
+  `/etc/passwd`, `/proc/self/environ` or a committed symlink pointing out of the
+  checkout) are rejected before the file is read, so a pull request cannot turn
+  the check into a reader of runner-local files. There is no opt-out.
+
+The index is queried with PEP 691 JSON (`application/vnd.pypi.simple.v1+json`)
+and falls back to parsing the HTML simple index for older mirrors. Each project
+page is fetched once per run. Index URLs come only from the action inputs, and
+no `Authorization` header is ever sent. A failing index (HTTP error, timeout,
+oversized response) fails the check rather than silently passing.
+`requires-python` is not evaluated: the check answers "does this distribution
+version exist for the target marker environment", not "would pip install it on
+this platform".
+
 ## Inputs
 
 | Input | Default | Meaning |
 |---|---|---|
-| `mode` | `auto` | `branch` when source-branch is set; otherwise `fork`. Explicit `fork`/`branch` validate compatible inputs. |
+| `mode` | `auto` | `fork`, `branch`, `python-index`, or `auto` (`branch` when source-branch is set; otherwise `fork`). Explicit modes validate compatible inputs. |
 | `token` | `${{ github.token }}` | Destination metadata, push and PR token. |
 | `upstream-repo` | fork parent | `owner/name`; fork mode only. |
 | `upstream-branch` | upstream default | Source ref; fork mode only. |
@@ -240,6 +336,14 @@ Push without PR (job needs only `contents: write`):
 | `assignees` | empty | Comma-separated usernames; failures are warnings. |
 | `dry-run` | `false` | Compute without push or PR changes. |
 | `skip-pr` | `false` | Publish head without PR creation/update. |
+| `requirements-file` | `requirements.txt` | `python-index`: file to verify, relative to `GITHUB_WORKSPACE`. |
+| `index-url` | `https://pypi.org/simple` | `python-index`: PEP 503 simple index base URL; the only index source, anonymous only. |
+| `extra-index-urls` | empty | `python-index`: comma-separated additional index URLs (action inputs are the only source). |
+| `allow-prerelease` | `false` | `python-index`: accept pre-releases; the file's `--pre` does this too. |
+| `timeout-seconds` | `30` | `python-index`: per-request HTTP timeout. |
+| `python-version` | empty | `python-index`: target Python version for marker evaluation (e.g. `3.12.7`); empty disables evaluation. |
+| `platform` | `linux` | `python-index`: target `sys_platform` for marker evaluation: `linux`, `darwin`, `win32`. |
+| `platform-machine` | runner arch | `python-index`: target `platform_machine` for marker evaluation. |
 
 ## Outputs
 
@@ -251,6 +355,9 @@ Push without PR (job needs only `contents: write`):
 | `target-sha`, `upstream-sha` | Fetched target/source SHAs. |
 | `commit-count` | Commits the head brings to the target. |
 | `pushed` | Whether a push succeeded. |
+| `checked-count` | `python-index`: requirements inspected. |
+| `failed-count` | `python-index`: requirements missing or failing to resolve. |
+| `skipped-count` | `python-index`: requirements skipped (local paths, editables, unsatisfied markers). |
 
 Consume outputs through step `env:` mappings when using shell commands, not
 expression interpolation into shell source. PR/API failure after a successful
