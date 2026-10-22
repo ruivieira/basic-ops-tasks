@@ -6,6 +6,7 @@ import * as path from 'node:path'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { syncRepository } from './git-ops.js'
 import type { SyncRepoResult } from './git-ops.js'
+import { runPythonIndexCheck } from './python-index.js'
 
 type Octokit = ReturnType<typeof github.getOctokit>
 type PullRequest = { number: number; html_url: string; body?: string | null }
@@ -136,6 +137,15 @@ function buildPullRequestBody(
 }
 
 async function run(): Promise<void> {
+  const modeInput = core.getInput('mode').trim() || 'auto'
+  if (!['auto', 'fork', 'branch', 'python-index'].includes(modeInput)) {
+    throw new Error(`mode must be "auto", "fork", "branch" or "python-index", got "${modeInput}".`)
+  }
+  if (modeInput === 'python-index') {
+    await runPythonIndexCheck()
+    return
+  }
+
   const token = core.getInput('token')
   if (!token) {
     throw new Error(
@@ -156,10 +166,6 @@ async function run(): Promise<void> {
   const upstreamBranchInput = core.getInput('upstream-branch').trim()
   const targetBranchInput = core.getInput('target-branch').trim()
   const sourceBranchInput = core.getInput('source-branch').trim()
-  const modeInput = core.getInput('mode').trim() || 'auto'
-  if (modeInput !== 'auto' && modeInput !== 'fork' && modeInput !== 'branch') {
-    throw new Error(`mode must be "auto", "fork" or "branch", got "${modeInput}".`)
-  }
   const branchMode = modeInput === 'branch' || (modeInput === 'auto' && sourceBranchInput !== '')
 
   if (modeInput === 'branch' && !sourceBranchInput) {
